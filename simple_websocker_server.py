@@ -122,10 +122,10 @@ class SimplePolicy:
         elif self.step_count == 1:
             logger.info(f"First observation received with keys: {list(obs.keys())}")
 
-        # Return zero action (robot will remain stationary)
-        action = np.zeros(self.action_dim, dtype=np.float32)
-        action = [-1] * self.action_dim  # For testing purposes, return -1 actions
-        action = np.array(action, dtype=np.float32)
+        # Return test action (-1 for all joints)
+        # This causes the robot to remain stationary in the default configuration
+        # Modify this for testing different actions
+        action = np.full(self.action_dim, -1.0, dtype=np.float32)
 
         return action
 
