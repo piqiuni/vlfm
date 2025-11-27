@@ -30,18 +30,18 @@ Author: VLFM BEHAVIOR-1K Integration
 Date: 2025-11-26
 """
 
+import argparse
 import asyncio
-import websockets
+import logging
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
 import msgpack
 import numpy as np
-import argparse
-import logging
-import sys
-import os
-from typing import Dict, Any, Optional, Tuple
-from pathlib import Path
-
 import torch
+import websockets
 
 # Add vlfm to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -49,10 +49,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from vlfm.policy.behavior_policies import BehaviorITMPolicyV2
 
 # Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("vlfm_websocket_server")
 
 
@@ -61,29 +58,29 @@ class VLFMBehaviorPolicy:
     VLFM Policy wrapper for BEHAVIOR environment.
     Integrates BehaviorITMPolicyV2 for object-goal navigation with visual odometry.
     """
-    
+
     # Camera configuration mapping
     CAMERA_CONFIGS = {
-        'left': {
-            'rgb_key': 'robot_r1::robot_r1:left_realsense_link:Camera:0::rgb',
-            'depth_key': 'robot_r1::robot_r1:left_realsense_link:Camera:0::depth',
-            'width': 480,
-            'height': 480,
+        "left": {
+            "rgb_key": "robot_r1::robot_r1:left_realsense_link:Camera:0::rgb",
+            "depth_key": "robot_r1::robot_r1:left_realsense_link:Camera:0::depth",
+            "width": 480,
+            "height": 480,
         },
-        'right': {
-            'rgb_key': 'robot_r1::robot_r1:right_realsense_link:Camera:0::rgb',
-            'depth_key': 'robot_r1::robot_r1:right_realsense_link:Camera:0::depth',
-            'width': 480,
-            'height': 480,
+        "right": {
+            "rgb_key": "robot_r1::robot_r1:right_realsense_link:Camera:0::rgb",
+            "depth_key": "robot_r1::robot_r1:right_realsense_link:Camera:0::depth",
+            "width": 480,
+            "height": 480,
         },
-        'zed': {
-            'rgb_key': 'robot_r1::robot_r1:zed_link:Camera:0::rgb',
-            'depth_key': 'robot_r1::robot_r1:zed_link:Camera:0::depth',
-            'width': 720,
-            'height': 720,
+        "zed": {
+            "rgb_key": "robot_r1::robot_r1:zed_link:Camera:0::rgb",
+            "depth_key": "robot_r1::robot_r1:zed_link:Camera:0::depth",
+            "width": 720,
+            "height": 720,
         },
     }
-    
+
     def __init__(
         self,
         target_object: str = "chair",
@@ -98,7 +95,7 @@ class VLFMBehaviorPolicy:
     ):
         """
         Initialize VLFM policy for BEHAVIOR environment.
-        
+
         Args:
             target_object: Name of target object to navigate to
             camera_name: Which camera to use ('left', 'right', or 'zed')
@@ -112,26 +109,23 @@ class VLFMBehaviorPolicy:
         """
         if camera_name not in self.CAMERA_CONFIGS:
             raise ValueError(f"Invalid camera_name: {camera_name}. Must be one of {list(self.CAMERA_CONFIGS.keys())}")
-        
+
         self.target_object = target_object
         self.camera_name = camera_name
         self.camera_config = self.CAMERA_CONFIGS[camera_name]
         self.action_dim = action_dim
         self.step_count = 0
-        
+
         # Auto-calculate focal lengths if not provided (assume 90° FOV)
         if camera_fx is None:
-            camera_fx = self.camera_config['width'] / 2.0
+            camera_fx = self.camera_config["width"] / 2.0
         if camera_fy is None:
-            camera_fy = self.camera_config['height'] / 2.0
-        
+            camera_fy = self.camera_config["height"] / 2.0
+
         # Default text prompt if not provided
         if text_prompt is None:
-            text_prompt = (
-                "This place looks like it has a target_object | "
-                "This place looks promising for exploration"
-            )
-        
+            text_prompt = "This place looks like it has a target_object | " "This place looks promising for exploration"
+
         logger.info("=" * 80)
         logger.info("Initializing BehaviorITMPolicyV2...")
         logger.info(f"  Target object: {target_object}")
@@ -140,7 +134,7 @@ class VLFMBehaviorPolicy:
         logger.info(f"  Depth range: [{min_depth}, {max_depth}] meters")
         logger.info(f"  Text prompt: {text_prompt}")
         logger.info("=" * 80)
-        
+
         try:
             # Initialize VLFM policy with visual odometry
             self.policy = BehaviorITMPolicyV2(
@@ -156,37 +150,37 @@ class VLFMBehaviorPolicy:
             logger.info("  - Obstacle mapping enabled")
             logger.info("  - Frontier-based exploration enabled")
             logger.info("=" * 80)
-            
+
         except Exception as e:
             logger.error(f"✗ Failed to initialize policy: {e}", exc_info=True)
             logger.error("Make sure BLIP2-ITM server is running!")
             raise
-        
+
         # Episode state
         self.masks = torch.tensor([[1.0]])  # Episode continues
         self.rnn_hidden_states = None
         self.prev_actions = None
-        
+
     def reset(self) -> None:
         """Reset policy and episode state for new episode."""
         logger.info("")
         logger.info("=" * 80)
         logger.info(f"EPISODE RESET - Target: {self.target_object}")
         logger.info("=" * 80)
-        
+
         self.step_count = 0
         self.masks = torch.tensor([[1.0]])
         self.rnn_hidden_states = None
         self.prev_actions = None
-        
+
         # Reset policy internal state (visual odometry, maps, etc.)
         self.policy._reset()
         logger.info("Policy state reset complete")
-        
+
     def predict(self, obs: Dict[str, Any]) -> np.ndarray:
         """
         Compute action from observation.
-        
+
         Expected observation format:
             obs = {
                 "robot_r1::proprio": np.ndarray (256,),
@@ -199,38 +193,41 @@ class VLFMBehaviorPolicy:
                 "robot_r1::cam_rel_poses": np.ndarray (21,),
                 "task_id": np.ndarray (1,),
             }
-        
+
         Args:
             obs: Observation dictionary from BEHAVIOR environment
-        
+
         Returns:
             np.ndarray: Action array of shape (action_dim,) with base motion commands
         """
         self.step_count += 1
-        
+
         try:
             # Extract RGB and depth from selected camera
             rgb, depth = self._extract_rgbd(obs)
-            
+
             if rgb is None or depth is None:
                 logger.warning(f"Step {self.step_count}: Missing RGB or depth, returning zero action")
                 return np.zeros(self.action_dim, dtype=np.float32)
-            
+
             # Log observation info periodically
             if self.step_count == 1 or self.step_count % 50 == 0:
                 logger.info(f"Step {self.step_count}:")
                 logger.info(f"  RGB: shape={rgb.shape}, dtype={rgb.dtype}, range=[{rgb.min()}, {rgb.max()}]")
-                logger.info(f"  Depth: shape={depth.shape}, dtype={depth.dtype}, range=[{depth.min():.3f}, {depth.max():.3f}]m")
+                logger.info(
+                    f"  Depth: shape={depth.shape}, dtype={depth.dtype}, "
+                    f"range=[{depth.min():.3f}, {depth.max():.3f}]m"
+                )
                 if "task_id" in obs:
                     logger.info(f"  Task ID: {obs['task_id']}")
-            
+
             # Prepare observation for VLFM policy
             policy_obs = {
-                'rgb': rgb,          # (H, W, 3) uint8
-                'depth': depth,      # (H, W) float32 in meters
-                'objectgoal': self.target_object,
+                "rgb": rgb,  # (H, W, 3) uint8
+                "depth": depth,  # (H, W) float32 in meters
+                "objectgoal": self.target_object,
             }
-            
+
             # Get action from VLFM policy
             action_tensor, self.rnn_hidden_states = self.policy.act(
                 observations=policy_obs,
@@ -239,42 +236,42 @@ class VLFMBehaviorPolicy:
                 masks=self.masks,
                 deterministic=True,
             )
-            
+
             # Extract action values: (angular_vel, linear_vel)
             vlfm_action = action_tensor.cpu().numpy()[0]  # Shape: (2,)
             angular_vel = float(vlfm_action[0])
             linear_vel = float(vlfm_action[1])
-            
+
             # Log non-zero actions
             if self.step_count % 10 == 0 or abs(angular_vel) > 0.01 or abs(linear_vel) > 0.01:
                 logger.info(f"  VLFM Action: angular={angular_vel:.3f} rad/s, linear={linear_vel:.3f} m/s")
-            
+
             # Convert VLFM action to R1Pro robot action space
             # R1Pro action space (23D): [base_motion, arm_joints, gripper, etc.]
             # For now: only control base (first 2-3 DOFs)
             robot_action = np.zeros(self.action_dim, dtype=np.float32)
-            
+
             # Map to base control (adjust indices based on actual R1Pro action space)
             # TODO: Verify correct action indices from R1Pro documentation
             robot_action[0] = angular_vel  # Base rotation (yaw)
-            robot_action[1] = linear_vel   # Base forward velocity
+            robot_action[1] = linear_vel  # Base forward velocity
             # robot_action[2] = 0.0        # Base lateral velocity (if applicable)
-            
+
             self.prev_actions = action_tensor
-            
+
             return robot_action
-            
+
         except Exception as e:
             logger.error(f"Step {self.step_count}: Error in predict: {e}", exc_info=True)
             return np.zeros(self.action_dim, dtype=np.float32)
-    
+
     def _extract_rgbd(self, obs: Dict[str, Any]) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Extract RGB and depth images from BEHAVIOR observation.
-        
+
         Args:
             obs: Observation dictionary with camera data
-            
+
         Returns:
             tuple: (rgb, depth) as numpy arrays
                 - rgb: (H, W, 3) uint8, range [0, 255]
@@ -283,48 +280,48 @@ class VLFMBehaviorPolicy:
         """
         try:
             # Get camera keys
-            rgb_key = self.camera_config['rgb_key']
-            depth_key = self.camera_config['depth_key']
-            
+            rgb_key = self.camera_config["rgb_key"]
+            depth_key = self.camera_config["depth_key"]
+
             # Extract RGB
             if rgb_key not in obs:
                 logger.error(f"RGB key '{rgb_key}' not found in observation")
                 logger.error(f"Available keys: {list(obs.keys())}")
                 return None, None
-            
+
             rgb = obs[rgb_key]  # Shape: (H, W, 4) uint8 (RGBA)
-            
+
             # Convert RGBA to RGB
             if rgb.shape[2] == 4:
                 rgb = rgb[:, :, :3]  # Drop alpha channel
-            
+
             # Ensure uint8
             if rgb.dtype != np.uint8:
                 rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-            
+
             # Extract depth
             if depth_key not in obs:
                 logger.error(f"Depth key '{depth_key}' not found in observation")
                 return None, None
-            
+
             depth = obs[depth_key]  # Shape: (H, W, 1) float32
-            
+
             # Squeeze to 2D if needed
             if len(depth.shape) == 3:
                 depth = depth[:, :, 0]
-            
+
             # Ensure float32
             if depth.dtype != np.float32:
                 depth = depth.astype(np.float32)
-            
+
             # Depth should already be in meters from BEHAVIOR
             # If values seem too large (e.g., in mm), convert
             if depth.max() > 100.0:
                 logger.warning(f"Depth values seem large (max={depth.max():.1f}), converting mm to meters")
                 depth = depth / 1000.0
-            
+
             return rgb, depth
-            
+
         except Exception as e:
             logger.error(f"Error extracting RGB-D: {e}", exc_info=True)
             return None, None
@@ -333,7 +330,7 @@ class VLFMBehaviorPolicy:
 async def handle_client(websocket, path, policy: VLFMBehaviorPolicy):
     """
     Handle WebSocket client connection.
-    
+
     Args:
         websocket: WebSocket connection object
         path: Connection path
@@ -341,49 +338,43 @@ async def handle_client(websocket, path, policy: VLFMBehaviorPolicy):
     """
     client_address = websocket.remote_address
     logger.info(f"Client connected from {client_address}")
-    
+
     try:
         async for message in websocket:
             try:
                 # Deserialize observation using msgpack
                 obs = msgpack.unpackb(message, raw=False)
-                
+
                 # Check if this is a reset signal
                 if isinstance(obs, dict) and obs.get("reset", False):
                     logger.info("Received reset signal from client")
                     policy.reset()
-                    
+
                     # Send acknowledgment
                     response = {"status": "reset_ok"}
                     response_bytes = msgpack.packb(response, use_bin_type=True)
                     await websocket.send(response_bytes)
                     continue
-                
+
                 # Get action from policy
                 action = policy.predict(obs)
-                
+
                 # Prepare response
                 response = {"action": action}
-                
+
                 # Serialize and send response
                 response_bytes = msgpack.packb(response, use_bin_type=True)
                 await websocket.send(response_bytes)
-                
+
             except msgpack.exceptions.ExtraData as e:
                 logger.error(f"msgpack ExtraData error: {e}")
-                error_response = msgpack.packb(
-                    {"error": f"msgpack ExtraData - {str(e)}"}, 
-                    use_bin_type=True
-                )
+                error_response = msgpack.packb({"error": f"msgpack ExtraData - {str(e)}"}, use_bin_type=True)
                 await websocket.send(error_response)
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
-                error_response = msgpack.packb(
-                    {"error": str(e)}, 
-                    use_bin_type=True
-                )
+                error_response = msgpack.packb({"error": str(e)}, use_bin_type=True)
                 await websocket.send(error_response)
-    
+
     except websockets.exceptions.ConnectionClosedOK:
         logger.info(f"Client {client_address} disconnected normally")
     except websockets.exceptions.ConnectionClosedError as e:
@@ -409,7 +400,7 @@ async def main(
 ):
     """
     Start the WebSocket server with VLFM policy.
-    
+
     Args:
         host: Host address to bind to
         port: Port to listen on
@@ -434,7 +425,7 @@ async def main(
     logger.warning(f"  python -m vlfm.vlm.blip2itm --port {blip2_port}")
     logger.info("=" * 80)
     logger.info("")
-    
+
     # Initialize policy
     try:
         policy = VLFMBehaviorPolicy(
@@ -452,7 +443,7 @@ async def main(
         logger.error(f"Failed to initialize VLFM policy: {e}")
         logger.error("Make sure BLIP2-ITM server is running!")
         return
-    
+
     logger.info("")
     logger.info("=" * 80)
     logger.info("VLFM WEBSOCKET SERVER - READY")
@@ -469,15 +460,15 @@ async def main(
     logger.info(f"  python behavior_env_web.py --host {client_host} --port {port}")
     logger.info("=" * 80)
     logger.info("")
-    
+
     # Start WebSocket server
     async with websockets.serve(
         lambda ws, path: handle_client(ws, path, policy),
         host,
         port,
         max_size=100 * 1024 * 1024,  # 100 MB max message size (for large images)
-        ping_interval=20,             # Send ping every 20 seconds
-        ping_timeout=10,              # Wait 10 seconds for pong
+        ping_interval=20,  # Send ping every 20 seconds
+        ping_timeout=10,  # Wait 10 seconds for pong
     ):
         await asyncio.Future()  # Run forever
 
@@ -487,100 +478,53 @@ if __name__ == "__main__":
         description="VLFM WebSocket server for BEHAVIOR environment control",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host address to bind to")
+    parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
     parser.add_argument(
-        "--host",
-        type=str,
-        default="0.0.0.0",
-        help="Host address to bind to"
+        "--target", type=str, default="chair", help="Target object to navigate to (e.g., chair, bottle, apple)"
     )
     parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port to listen on"
+        "--camera", type=str, default="zed", choices=["left", "right", "zed"], help="Which camera to use for navigation"
     )
     parser.add_argument(
-        "--target",
-        type=str,
-        default="chair",
-        help="Target object to navigate to (e.g., chair, bottle, apple)"
+        "--camera-fx", type=float, default=None, help="Camera focal length in x direction (auto-calculated if not set)"
     )
     parser.add_argument(
-        "--camera",
-        type=str,
-        default="zed",
-        choices=["left", "right", "zed"],
-        help="Which camera to use for navigation"
+        "--camera-fy", type=float, default=None, help="Camera focal length in y direction (auto-calculated if not set)"
     )
+    parser.add_argument("--min-depth", type=float, default=0.1, help="Minimum valid depth in meters")
+    parser.add_argument("--max-depth", type=float, default=10.0, help="Maximum valid depth in meters")
+    parser.add_argument("--text-prompt", type=str, default=None, help="Custom text prompt for ITM model")
     parser.add_argument(
-        "--camera-fx",
-        type=float,
-        default=None,
-        help="Camera focal length in x direction (auto-calculated if not set)"
+        "--visualize", action="store_true", help="Enable visualization outputs (value maps, trajectories)"
     )
-    parser.add_argument(
-        "--camera-fy",
-        type=float,
-        default=None,
-        help="Camera focal length in y direction (auto-calculated if not set)"
-    )
-    parser.add_argument(
-        "--min-depth",
-        type=float,
-        default=0.1,
-        help="Minimum valid depth in meters"
-    )
-    parser.add_argument(
-        "--max-depth",
-        type=float,
-        default=10.0,
-        help="Maximum valid depth in meters"
-    )
-    parser.add_argument(
-        "--text-prompt",
-        type=str,
-        default=None,
-        help="Custom text prompt for ITM model"
-    )
-    parser.add_argument(
-        "--visualize",
-        action="store_true",
-        help="Enable visualization outputs (value maps, trajectories)"
-    )
-    parser.add_argument(
-        "--action-dim",
-        type=int,
-        default=23,
-        help="Action space dimension for R1Pro robot"
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose logging (debug level)"
-    )
-    
+    parser.add_argument("--action-dim", type=int, default=23, help="Action space dimension for R1Pro robot")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (debug level)")
+
     args = parser.parse_args()
-    
+
     # Set logging level
     if args.verbose:
         logger.setLevel(logging.DEBUG)
         logging.getLogger("vlfm").setLevel(logging.DEBUG)
-    
+
     # Run server
     try:
-        asyncio.run(main(
-            host=args.host,
-            port=args.port,
-            target_object=args.target,
-            camera_name=args.camera,
-            camera_fx=args.camera_fx,
-            camera_fy=args.camera_fy,
-            min_depth=args.min_depth,
-            max_depth=args.max_depth,
-            text_prompt=args.text_prompt,
-            visualize=args.visualize,
-            action_dim=args.action_dim,
-        ))
+        asyncio.run(
+            main(
+                host=args.host,
+                port=args.port,
+                target_object=args.target,
+                camera_name=args.camera,
+                camera_fx=args.camera_fx,
+                camera_fy=args.camera_fy,
+                min_depth=args.min_depth,
+                max_depth=args.max_depth,
+                text_prompt=args.text_prompt,
+                visualize=args.visualize,
+                action_dim=args.action_dim,
+            )
+        )
     except KeyboardInterrupt:
         logger.info("")
         logger.info("=" * 80)
