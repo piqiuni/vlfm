@@ -17,21 +17,21 @@ Main Components:
     1. SimpleVisualOdometry: Estimates robot pose from consecutive RGB-D frames using feature
        matching and RANSAC-based rigid transformation. Can be replaced with more sophisticated
        SLAM systems (e.g., ORB-SLAM3, pyslam) by implementing the same interface.
-       
+
     2. BehaviorMixin: Transforms single RGB-D camera observations into the format expected
        by ITMPolicyV2, including:
        - Robot localization via visual odometry
        - Obstacle map construction and updates
        - Frontier detection for exploration
        - Value map and object map generation
-       
+
     3. BehaviorITMPolicyV2: Final policy class combining BehaviorMixin and ITMPolicyV2 for
        object-goal navigation in BEHAVIOR-1K simulator.
 
 Usage Example:
     ```python
     from vlfm.policy.behavior_policies import BehaviorITMPolicyV2
-    
+
     # Initialize policy
     policy = BehaviorITMPolicyV2(
         camera_fx=320.0,  # Camera focal length in pixels
@@ -41,7 +41,7 @@ Usage Example:
         text_prompt="This looks like a target_object | This looks promising for exploration",
         visualize=True,
     )
-    
+
     # In simulation loop
     observations = {
         'rgb': rgb_image,      # (H, W, 3) uint8
@@ -92,35 +92,35 @@ class SimpleVisualOdometry:
     def __init__(self, fx: float = 320.0, fy: float = 320.0):
         """
         Initialize visual odometry.
-        
+
         Args:
             fx: Camera focal length in x direction (pixels)
             fy: Camera focal length in y direction (pixels)
         """
         self.fx = fx
         self.fy = fy
-        
+
         # State variables
         self.prev_rgb: Optional[np.ndarray] = None
         self.prev_depth: Optional[np.ndarray] = None
         self.position = np.array([0.0, 0.0])  # (x, y) in meters
         self.heading = 0.0  # radians
-        
+
         # ORB feature detector
         self.orb = cv2.ORB_create(nfeatures=2000)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        
+
         # RANSAC parameters
         self.min_matches = 10
         self.ransac_threshold = 0.01  # meters
-        
+
     def reset(self) -> None:
         """Reset odometry state."""
         self.prev_rgb = None
         self.prev_depth = None
         self.position = np.array([0.0, 0.0])
         self.heading = 0.0
-        
+
     def estimate_motion(
         self,
         rgb: np.ndarray,
@@ -128,11 +128,11 @@ class SimpleVisualOdometry:
     ) -> Tuple[np.ndarray, float]:
         """
         Estimate camera motion from consecutive RGB-D frames.
-        
+
         Args:
             rgb: Current RGB image (H, W, 3), uint8
             depth: Current depth image (H, W), normalized [0, 1]
-            
+
         Returns:
             position: Current position (x, y) in meters
             heading: Current heading in radians
@@ -142,22 +142,22 @@ class SimpleVisualOdometry:
             self.prev_rgb = rgb.copy()
             self.prev_depth = depth.copy()
             return self.position.copy(), self.heading
-        
+
         # Convert to grayscale for feature detection
         gray_prev = cv2.cvtColor(self.prev_rgb, cv2.COLOR_RGB2GRAY)
         gray_curr = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-        
+
         # Detect and match features
         kp1, des1 = self.orb.detectAndCompute(gray_prev, None)
         kp2, des2 = self.orb.detectAndCompute(gray_curr, None)
-        
+
         # Handle case where no features are detected
         if des1 is None or des2 is None or len(des1) < self.min_matches:
             print("Warning: Insufficient features detected for VO")
             self.prev_rgb = rgb.copy()
             self.prev_depth = depth.copy()
             return self.position.copy(), self.heading
-        
+
         # Match features
         matches = self.matcher.match(des1, des2)
         if len(matches) < self.min_matches:
@@ -165,103 +165,103 @@ class SimpleVisualOdometry:
             self.prev_rgb = rgb.copy()
             self.prev_depth = depth.copy()
             return self.position.copy(), self.heading
-        
+
         # Sort matches by distance and take the best ones
-        matches = sorted(matches, key=lambda x: x.distance)[:min(len(matches), 500)]
-        
+        matches = sorted(matches, key=lambda x: x.distance)[: min(len(matches), 500)]
+
         # Extract 3D points from matched features
         pts1_3d = []
         pts2_3d = []
-        
+
         h, w = depth.shape
         cx, cy = w / 2.0, h / 2.0
-        
+
         for m in matches:
             # Get pixel coordinates
             u1, v1 = kp1[m.queryIdx].pt
             u2, v2 = kp2[m.trainIdx].pt
-            
+
             # Get depth values (normalized depth needs to be scaled)
             # Assuming depth range is normalized, we use a reasonable scale
             d1 = self.prev_depth[int(v1), int(u1)] * 10.0  # scale to meters
             d2 = depth[int(v2), int(u2)] * 10.0
-            
+
             # Filter invalid depths
             if d1 <= 0.01 or d1 >= 9.9 or d2 <= 0.01 or d2 >= 9.9:
                 continue
-            
+
             # Back-project to 3D (camera coordinates: z-forward, x-right, y-down)
             x1 = (u1 - cx) * d1 / self.fx
             y1 = (v1 - cy) * d1 / self.fy
             pts1_3d.append([x1, y1, d1])
-            
+
             x2 = (u2 - cx) * d2 / self.fx
             y2 = (v2 - cy) * d2 / self.fy
             pts2_3d.append([x2, y2, d2])
-        
+
         # Need sufficient 3D correspondences
         if len(pts1_3d) < self.min_matches:
             print(f"Warning: Only {len(pts1_3d)} valid 3D correspondences")
             self.prev_rgb = rgb.copy()
             self.prev_depth = depth.copy()
             return self.position.copy(), self.heading
-        
+
         pts1_3d = np.array(pts1_3d, dtype=np.float64)
         pts2_3d = np.array(pts2_3d, dtype=np.float64)
-        
+
         # Estimate rigid transformation using RANSAC
         try:
             success, transform, inliers = cv2.estimateAffine3D(
-                pts1_3d, pts2_3d,
-                ransacThreshold=self.ransac_threshold,
-                confidence=0.99
+                pts1_3d, pts2_3d, ransacThreshold=self.ransac_threshold, confidence=0.99
             )
-            
+
             if not success or inliers is None or inliers.sum() < self.min_matches:
-                print(f"Warning: Transformation estimation failed or insufficient inliers")
+                print("Warning: Transformation estimation failed or insufficient inliers")
                 self.prev_rgb = rgb.copy()
                 self.prev_depth = depth.copy()
                 return self.position.copy(), self.heading
-            
+
             # Extract rotation and translation from affine transform (3x4 matrix)
             R = transform[:3, :3]
             t = transform[:3, 3]
-            
+
             # Ensure rotation matrix is valid
             U, _, Vt = np.linalg.svd(R)
             R = U @ Vt
-            
+
             # Extract motion in camera frame
             # Camera coordinates: z is forward, x is right, y is down
             delta_forward = t[2]  # z component (forward/backward)
-            delta_right = t[0]    # x component (left/right)
-            
+            delta_right = t[0]  # x component (left/right)
+
             # Extract yaw rotation (rotation around y-axis)
             delta_yaw = np.arctan2(R[0, 2], R[2, 2])
-            
+
             # Update global pose
             self.heading += delta_yaw
             self.heading = np.arctan2(np.sin(self.heading), np.cos(self.heading))  # Normalize to [-pi, pi]
-            
+
             # Transform camera-frame motion to world frame
             cos_h = np.cos(self.heading)
             sin_h = np.sin(self.heading)
-            
+
             # Update position (map z-forward and x-right to world x-y)
             self.position[0] += delta_forward * cos_h - delta_right * sin_h
             self.position[1] += delta_forward * sin_h + delta_right * cos_h
-            
-            print(f"VO: Moved ({delta_forward:.3f}, {delta_right:.3f})m, "
-                  f"rotated {np.rad2deg(delta_yaw):.1f}°, "
-                  f"inliers: {inliers.sum()}/{len(pts1_3d)}")
-            
+
+            print(
+                f"VO: Moved ({delta_forward:.3f}, {delta_right:.3f})m, "
+                f"rotated {np.rad2deg(delta_yaw):.1f}°, "
+                f"inliers: {inliers.sum()}/{len(pts1_3d)}"
+            )
+
         except Exception as e:
             print(f"Warning: VO estimation error: {e}")
-        
+
         # Update previous frame
         self.prev_rgb = rgb.copy()
         self.prev_depth = depth.copy()
-        
+
         return self.position.copy(), self.heading
 
 
@@ -287,11 +287,11 @@ class BehaviorMixin:
         min_depth: float = 0.1,
         max_depth: float = 10.0,
         *args: Any,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         """
         Initialize BehaviorMixin.
-        
+
         Args:
             camera_fx: Camera focal length in x direction (pixels)
             camera_fy: Camera focal length in y direction (pixels)
@@ -299,22 +299,17 @@ class BehaviorMixin:
             max_depth: Maximum valid depth value (meters)
         """
         super().__init__(sync_explored_areas=True, *args, **kwargs)  # type: ignore
-        
+
         # Camera parameters
         self._camera_fx = camera_fx
         self._camera_fy = camera_fy
         self._min_depth = min_depth
         self._max_depth = max_depth
-        
+
         # Initialize visual odometry
         # This can be easily replaced with a more sophisticated SLAM system
         self._vo = SimpleVisualOdometry(fx=camera_fx, fy=camera_fy)
-        
-        # Cumulative odometry state (origin at initialization)
-        self._cumulative_x = 0.0
-        self._cumulative_y = 0.0
-        self._cumulative_heading = 0.0
-        
+
         print(f"BehaviorMixin initialized with camera params: fx={camera_fx}, fy={camera_fy}")
 
     @classmethod
@@ -322,17 +317,17 @@ class BehaviorMixin:
         """Create policy from config."""
         policy_config: VLFMConfig = config.policy
         kwargs = {k: policy_config[k] for k in VLFMConfig.kwaarg_names}  # type: ignore
-        
+
         # Add camera-specific parameters from config
-        if hasattr(policy_config, 'camera_fx'):
-            kwargs['camera_fx'] = policy_config.camera_fx
-        if hasattr(policy_config, 'camera_fy'):
-            kwargs['camera_fy'] = policy_config.camera_fy
-        if hasattr(policy_config, 'min_depth'):
-            kwargs['min_depth'] = policy_config.min_depth
-        if hasattr(policy_config, 'max_depth'):
-            kwargs['max_depth'] = policy_config.max_depth
-        
+        if hasattr(policy_config, "camera_fx"):
+            kwargs["camera_fx"] = policy_config.camera_fx
+        if hasattr(policy_config, "camera_fy"):
+            kwargs["camera_fy"] = policy_config.camera_fy
+        if hasattr(policy_config, "min_depth"):
+            kwargs["min_depth"] = policy_config.min_depth
+        if hasattr(policy_config, "max_depth"):
+            kwargs["max_depth"] = policy_config.max_depth
+
         return cls(**kwargs)
 
     def act(
@@ -345,14 +340,14 @@ class BehaviorMixin:
     ) -> Tuple[Tensor, Any]:
         """
         Get action from policy.
-        
+
         Args:
             observations: Dictionary containing 'rgb', 'depth', and 'objectgoal'
             rnn_hidden_states: RNN hidden states (not used)
             prev_actions: Previous actions (not used)
             masks: Episode continuation mask
             deterministic: Whether to use deterministic action selection
-            
+
         Returns:
             action: Tensor of shape (1, 2) with [angular_vel, linear_vel]
             rnn_hidden_states: Updated RNN hidden states
@@ -360,54 +355,44 @@ class BehaviorMixin:
         # Update non-COCO caption if needed
         if observations["objectgoal"] not in self._non_coco_caption:
             self._non_coco_caption = observations["objectgoal"] + " . " + self._non_coco_caption
-        
+
         # Call parent class act method
         parent_cls: ITMPolicyV2 = super()  # type: ignore
-        action, rnn_hidden_states = parent_cls.act(
-            observations, rnn_hidden_states, prev_actions, masks, deterministic
-        )
-        
+        action, rnn_hidden_states = parent_cls.act(observations, rnn_hidden_states, prev_actions, masks, deterministic)
+
         return action, rnn_hidden_states
 
     def _reset(self: Union["BehaviorMixin", ITMPolicyV2]) -> None:
         """Reset policy state."""
         parent_cls: ITMPolicyV2 = super()  # type: ignore
         parent_cls._reset()
-        
+
         # Reset visual odometry
         self._vo.reset()
-        
-        # Reset cumulative odometry to origin
-        self._cumulative_x = 0.0
-        self._cumulative_y = 0.0
-        self._cumulative_heading = 0.0
-        
-        print("Visual odometry and cumulative pose reset")
 
-    def _cache_observations(
-        self: Union["BehaviorMixin", ITMPolicyV2],
-        observations: Dict[str, Any]
-    ) -> None:
+        print("Visual odometry reset")
+
+    def _cache_observations(self: Union["BehaviorMixin", ITMPolicyV2], observations: Dict[str, Any]) -> None:
         """
         Cache observations and estimate robot pose using visual odometry.
-        
+
         Expected observations format:
         {
             'rgb': np.ndarray (H, W, 3) uint8,
             'depth': np.ndarray (H, W) float, normalized [0, 1] or in meters,
             'objectgoal': str
         }
-        
+
         Args:
             observations: Dictionary containing RGB, depth, and object goal
         """
         if len(self._observations_cache) > 0:
             return
-        
+
         # Extract observations
         rgb = observations["rgb"]  # (H, W, 3) uint8
         depth = observations["depth"]  # (H, W) float
-        
+
         # Ensure depth is in correct format [0, 1]
         if depth.max() > 1.0:
             # Assume depth is in meters, normalize it
@@ -415,50 +400,27 @@ class BehaviorMixin:
             depth_normalized = (depth - self._min_depth) / (self._max_depth - self._min_depth)
         else:
             depth_normalized = depth.copy()
-        
-        # Estimate robot motion (relative to previous frame)
-        delta_xy, delta_heading = self._vo.estimate_motion(rgb, depth_normalized)
-        
-        # Update cumulative pose using the delta motion
-        # First rotate the delta position by current heading, then add to cumulative position
-        cos_h = np.cos(self._cumulative_heading)
-        sin_h = np.sin(self._cumulative_heading)
-        
-        # Transform delta from robot frame to world frame
-        delta_x_world = cos_h * delta_xy[0] - sin_h * delta_xy[1]
-        delta_y_world = sin_h * delta_xy[0] + cos_h * delta_xy[1]
-        
-        # Accumulate position
-        self._cumulative_x += delta_x_world
-        self._cumulative_y += delta_y_world
-        
-        # Accumulate heading
-        self._cumulative_heading += delta_heading
-        
-        # Use accumulated pose as robot absolute position
-        robot_xy = np.array([self._cumulative_x, self._cumulative_y])
-        robot_heading = self._cumulative_heading
-        
-        print(f"Delta motion: dx=({delta_xy[0]:.2f}, {delta_xy[1]:.2f}), dh={np.rad2deg(delta_heading):.1f}°")
-        print(f"Cumulative pose: position=({robot_xy[0]:.2f}, {robot_xy[1]:.2f}), "
-              f"heading={np.rad2deg(robot_heading):.1f}°")
-        
+
+        # Estimate robot pose using visual odometry
+        # Note: estimate_motion() returns accumulated pose (not deltas)
+        robot_xy, robot_heading = self._vo.estimate_motion(rgb, depth_normalized)
+
+        print(f"VO pose: position=({robot_xy[0]:.2f}, {robot_xy[1]:.2f}), " f"heading={np.rad2deg(robot_heading):.1f}°")
+
         # Build transformation matrix (camera to world frame)
         # Camera is at robot_xy with heading robot_heading
         cos_h = np.cos(robot_heading)
         sin_h = np.sin(robot_heading)
-        
-        tf_camera_to_episodic = np.array([
-            [cos_h, 0, sin_h, robot_xy[0]],
-            [0, 1, 0, 0],
-            [-sin_h, 0, cos_h, robot_xy[1]],
-            [0, 0, 0, 1]
-        ], dtype=np.float64)
-        
+
+        tf_camera_to_episodic = np.array(
+            [[cos_h, 0, sin_h, robot_xy[0]], [0, 1, 0, 0], [-sin_h, 0, cos_h, robot_xy[1]], [0, 0, 0, 1]],
+            dtype=np.float64,
+        )
+
         # Calculate field of view
         h, w = depth.shape
         fov = 2 * np.arctan(w / (2 * self._camera_fx))
-        
+
         # Update obstacle map with current observations
         self._obstacle_map: ObstacleMap
         self._obstacle_map.update_map(
@@ -472,19 +434,19 @@ class BehaviorMixin:
             explore=True,  # Mark visible area as explored
             update_obstacles=True,  # Update obstacle locations
         )
-        
+
         # Update agent trajectory for visualization
         self._obstacle_map.update_agent_traj(robot_xy, robot_heading)
-        
+
         # Get frontiers for exploration
         frontiers = self._obstacle_map.frontiers
         print(f"Found {len(frontiers)} frontier points")
-        
+
         # Prepare depth tensor for PointNav
         depth_tensor = torch.from_numpy(depth_normalized).reshape(1, h, w, 1)
         if torch.cuda.is_available():
             depth_tensor = depth_tensor.to("cuda")
-        
+
         # Cache all observations in the expected format
         self._observations_cache = {
             "frontier_sensor": frontiers,  # (N, 2) array of frontier points
@@ -493,13 +455,19 @@ class BehaviorMixin:
             "robot_heading": robot_heading,  # float, heading in radians
             "object_map_rgbd": [
                 # List of tuples: (rgb, depth, tf, min_depth, max_depth, fx, fy)
-                (rgb, depth_normalized, tf_camera_to_episodic, 
-                 self._min_depth, self._max_depth, self._camera_fx, self._camera_fy)
+                (
+                    rgb,
+                    depth_normalized,
+                    tf_camera_to_episodic,
+                    self._min_depth,
+                    self._max_depth,
+                    self._camera_fx,
+                    self._camera_fy,
+                )
             ],
             "value_map_rgbd": [
                 # List of tuples: (rgb, depth, tf, min_depth, max_depth, fov)
-                (rgb, depth_normalized, tf_camera_to_episodic,
-                 self._min_depth, self._max_depth, fov)
+                (rgb, depth_normalized, tf_camera_to_episodic, self._min_depth, self._max_depth, fov)
             ],
         }
 
@@ -507,17 +475,18 @@ class BehaviorMixin:
 @dataclass
 class BehaviorConfig(DictConfig):
     """Configuration for BehaviorITMPolicyV2"""
+
     policy: VLFMConfig = VLFMConfig()
 
 
 class BehaviorITMPolicyV2(BehaviorMixin, ITMPolicyV2):
     """
     ITMPolicyV2 adapted for BEHAVIOR-1K simulator with visual odometry.
-    
+
     This policy uses a single RGB-D camera and estimates robot pose using
     simple visual odometry. The VO implementation can be easily replaced
     with more sophisticated SLAM systems.
-    
+
     Example usage:
         policy = BehaviorITMPolicyV2(
             camera_fx=320.0,
@@ -527,7 +496,7 @@ class BehaviorITMPolicyV2(BehaviorMixin, ITMPolicyV2):
             text_prompt="This looks like a target_object | This looks promising",
             # ... other ITMPolicyV2 parameters
         )
-        
+
         # In your simulation loop:
         obs = {
             'rgb': rgb_image,  # (H, W, 3) uint8
@@ -536,4 +505,5 @@ class BehaviorITMPolicyV2(BehaviorMixin, ITMPolicyV2):
         }
         action, _ = policy.act(obs, None, None, masks, deterministic=True)
     """
+
     pass
