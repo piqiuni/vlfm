@@ -58,8 +58,8 @@ class MobileSAM:
 
 
 class MobileSAMClient:
-    def __init__(self, port: int = 12183):
-        self.url = f"http://localhost:{port}/mobile_sam"
+    def __init__(self, host: str = "localhost", port: int = 12183):
+        self.url = f"http://{host}:{port}/mobile_sam"
 
     def segment_bbox(self, image: np.ndarray, bbox: List[int]) -> np.ndarray:
         response = send_request(self.url, image=image, bbox=bbox)

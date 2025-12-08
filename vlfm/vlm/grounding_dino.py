@@ -75,10 +75,12 @@ class GroundingDINO:
 
 
 class GroundingDINOClient:
-    def __init__(self, port: int = 12181):
-        self.url = f"http://localhost:{port}/gdino"
+    def __init__(self, host: str = "localhost", port: int = 12181):
+        self.url = f"http://{host}:{port}/gdino"
+        print(f"GroundingDINOClient url: {self.url}")
 
     def predict(self, image_numpy: np.ndarray, caption: Optional[str] = "") -> ObjectDetections:
+        
         response = send_request(self.url, image=image_numpy, caption=caption)
         detections = ObjectDetections.from_json(response, image_source=image_numpy)
 

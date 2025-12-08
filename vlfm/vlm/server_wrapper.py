@@ -144,7 +144,7 @@ def _send_request(url: str, **kwargs: Any) -> dict:
                 requests.exceptions.RequestException,
             ) as e:
                 print(e)
-                if time.time() - start_time > 20:
+                if time.time() - start_time > 5:
                     raise Exception("Request timed out after 20 seconds")
 
         try:

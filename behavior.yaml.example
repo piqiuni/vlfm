@@ -1,0 +1,120 @@
+# VLM Testing Configuration Example
+# Copy this to behavior.yaml and modify the server IP addresses
+
+# Server settings (WebSocket server for BEHAVIOR environment)
+server:
+  host: "0.0.0.0"
+  port: 8000
+  max_message_size: 104857600  # 100 MB in bytes
+  ping_interval: 20  # seconds
+  ping_timeout: 10   # seconds
+
+# Target object for navigation
+target:
+  object: "chair"  # Target object to navigate to (e.g., chair, bottle, apple, etc.)
+  
+# Camera configuration
+camera:
+  name: "zed"  # Options: "left", "right", "zed"
+  fx: null  # Camera focal length in x (null for auto-calculation based on 90° FOV)
+  fy: null  # Camera focal length in y (null for auto-calculation)
+  min_depth: 0.1   # Minimum valid depth in meters
+  max_depth: 10.0  # Maximum valid depth in meters
+
+# Camera sensor keys mapping (BEHAVIOR environment specific)
+camera_configs:
+  left:
+    rgb_key: "robot_r1::robot_r1:left_realsense_link:Camera:0::rgb"
+    depth_key: "robot_r1::robot_r1:left_realsense_link:Camera:0::depth"
+    width: 480
+    height: 480
+  right:
+    rgb_key: "robot_r1::robot_r1:right_realsense_link:Camera:0::rgb"
+    depth_key: "robot_r1::robot_r1:right_realsense_link:Camera:0::depth"
+    width: 480
+    height: 480
+  zed:
+    rgb_key: "robot_r1::robot_r1:zed_link:Camera:0::rgb"
+    depth_key: "robot_r1::robot_r1:zed_link:Camera:0::depth"
+    width: 720
+    height: 720
+
+# VLFM Policy parameters
+policy:
+  # Image-to-text matching prompt
+  text_prompt: "This place looks like it has a target_object | This place looks promising for exploration"
+  
+  # Visualization settings
+  visualize: false  # Enable to save visualization outputs (maps, trajectories)
+  
+  # Robot action space
+  action_dim: 23  # Action space dimension for R1Pro robot
+  
+  # Navigation parameters
+  nav:
+    obstacle_map:
+      size: 500  # Map size in pixels
+      resolution: 0.05  # Meters per pixel
+    
+    frontier_exploration:
+      min_frontier_size: 10  # Minimum frontier cluster size
+      
+  # Visual odometry parameters
+  visual_odometry:
+    method: "simple"  # Visual odometry method
+  # Morphological erosion applied to object maps (kernel size or iterations)
+  # - Interpreted by the policy as number of pixels/iterations to erode detected
+  #   object regions when building object maps. Larger values remove small
+  #   detections and thin connections; keep small (1-5) for typical scenes.
+  object_map_erosion_size: 5
+
+# ============================================================================
+# VLM Server Configurations
+# ============================================================================
+# IMPORTANT: Replace "localhost" with your cloud server IP address
+# Example: "192.168.1.100" or "your-server.com"
+#
+# Make sure all VLM servers are running on the cloud server:
+#   python -m vlfm.vlm.grounding_dino --port 12181
+#   python -m vlfm.vlm.yolov7 --port 12184
+#   python -m vlfm.vlm.mobile_sam --port 12183
+#   python -m vlfm.vlm.blip2 --port 12185
+#   python -m vlfm.vlm.blip2itm --port 12182
+# ============================================================================
+
+vlm_servers:
+  # BLIP2-ITM server (Image-Text Matching for value map)
+  blip2itm:
+    host: "localhost"  # <<< CHANGE THIS to your cloud server IP
+    port: 12182
+  
+  # Grounding DINO server (Open-vocabulary object detection)
+  grounding_dino:
+    host: "localhost"  # <<< CHANGE THIS to your cloud server IP
+    port: 12181
+  
+  # YOLOv7 server (COCO object detection)
+  yolov7:
+    host: "localhost"  # <<< CHANGE THIS to your cloud server IP
+    port: 12184
+  
+  # Mobile SAM server (Segment Anything Model for segmentation)
+  mobile_sam:
+    host: "localhost"  # <<< CHANGE THIS to your cloud server IP
+    port: 12183
+  
+  # BLIP2 server (Visual Question Answering, optional)
+  blip2:
+    host: "localhost"  # <<< CHANGE THIS to your cloud server IP
+    port: 12185
+    enabled: false  # Set to true to enable VQA verification
+    
+# Legacy configuration (for backward compatibility)
+blip2itm:
+  host: "localhost"
+  port: 12182
+  
+# Logging configuration
+logging:
+  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

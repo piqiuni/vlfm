@@ -56,8 +56,8 @@ class BLIP2:
 
 
 class BLIP2Client:
-    def __init__(self, port: int = 12185):
-        self.url = f"http://localhost:{port}/blip2"
+    def __init__(self, host: str = "localhost", port: int = 12185):
+        self.url = f"http://{host}:{port}/blip2"
 
     def ask(self, image: np.ndarray, prompt: Optional[str] = None) -> str:
         if prompt is None:

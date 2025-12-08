@@ -144,16 +144,15 @@ class SimpleVisualOdometry:
             return self.position.copy(), self.heading
 
         # Convert to grayscale for feature detection
-        gray_prev = cv2.cvtColor(self.prev_rgb, cv2.COLOR_RGB2GRAY)
-        gray_curr = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        # gray_prev = cv2.cvtColor(self.prev_rgb, cv2.COLOR_RGB2GRAY)
+        # gray_curr = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
         # Detect and match features
-        kp1, des1 = self.orb.detectAndCompute(gray_prev, None)
-        kp2, des2 = self.orb.detectAndCompute(gray_curr, None)
-
+        kp1, des1 = self.orb.detectAndCompute(self.prev_rgb, None)
+        kp2, des2 = self.orb.detectAndCompute(rgb, None)
         # Handle case where no features are detected
         if des1 is None or des2 is None or len(des1) < self.min_matches:
-            print("Warning: Insufficient features detected for VO")
+            print("Warning: Insufficient features detected for VO, ")
             self.prev_rgb = rgb.copy()
             self.prev_depth = depth.copy()
             return self.position.copy(), self.heading
@@ -161,7 +160,7 @@ class SimpleVisualOdometry:
         # Match features
         matches = self.matcher.match(des1, des2)
         if len(matches) < self.min_matches:
-            print("Warning: Insufficient feature matches for VO")
+            print("Warning: Insufficient feature matches for VO, len: ", len(matches))
             self.prev_rgb = rgb.copy()
             self.prev_depth = depth.copy()
             return self.position.copy(), self.heading
@@ -216,7 +215,7 @@ class SimpleVisualOdometry:
             )
 
             if not success or inliers is None or inliers.sum() < self.min_matches:
-                print("Warning: Transformation estimation failed or insufficient inliers")
+                print("Warning: Transformation estimation failed or insufficient inliersm inliers: ", inliers.sum() if inliers is not None else 0)
                 self.prev_rgb = rgb.copy()
                 self.prev_depth = depth.copy()
                 return self.position.copy(), self.heading
@@ -312,6 +311,11 @@ class BehaviorMixin:
 
         print(f"BehaviorMixin initialized with camera params: fx={camera_fx}, fy={camera_fy}")
 
+    def _initialize(self) -> Tensor:
+        """Turn left 30 degrees 12 times to get a 360 view at the beginning"""
+        self._done_initializing = not self._num_steps < 11 # type: ignore
+        return -1.0 * torch.ones(1, 2)  # Turn left
+    
     @classmethod
     def from_config(cls, config: DictConfig, *args_unused: Any, **kwargs_unused: Any) -> Any:
         """Create policy from config."""
@@ -359,7 +363,6 @@ class BehaviorMixin:
         # Call parent class act method
         parent_cls: ITMPolicyV2 = super()  # type: ignore
         action, rnn_hidden_states = parent_cls.act(observations, rnn_hidden_states, prev_actions, masks, deterministic)
-
         return action, rnn_hidden_states
 
     def _reset(self: Union["BehaviorMixin", ITMPolicyV2]) -> None:
@@ -403,7 +406,15 @@ class BehaviorMixin:
 
         # Estimate robot pose using visual odometry
         # Note: estimate_motion() returns accumulated pose (not deltas)
-        robot_xy, robot_heading = self._vo.estimate_motion(rgb, depth_normalized)
+        use_vo = False
+        if use_vo == True:
+            robot_xy, robot_heading = self._vo.estimate_motion(rgb, depth_normalized)
+        else:
+            robot_xy = np.array(observations["robot_pos"]) # x,y,z
+            x, y, z, w = np.array(observations["robot_ori"]) # 4元数
+            robot_heading = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y**2 + z**2))
+            
+            
 
         print(f"VO pose: position=({robot_xy[0]:.2f}, {robot_xy[1]:.2f}), " f"heading={np.rad2deg(robot_heading):.1f}°")
 

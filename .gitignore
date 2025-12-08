@@ -1,5 +1,6 @@
 data/*
 traced_model.pt
+vis_debug/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

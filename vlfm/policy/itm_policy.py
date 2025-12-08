@@ -41,11 +41,13 @@ class BaseITMPolicy(BaseObjectNavPolicy):
         text_prompt: str,
         use_max_confidence: bool = True,
         sync_explored_areas: bool = False,
+        blip2itm_host: str = "localhost",
+        blip2itm_port: int = 12182,
         *args: Any,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
-        self._itm = BLIP2ITMClient(port=int(os.environ.get("BLIP2ITM_PORT", "12182")))
+        self._itm = BLIP2ITMClient(host=blip2itm_host, port=blip2itm_port)
         self._text_prompt = text_prompt
         self._value_map: ValueMap = ValueMap(
             value_channels=len(text_prompt.split(PROMPT_SEPARATOR)),

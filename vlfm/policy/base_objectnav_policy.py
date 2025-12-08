@@ -57,16 +57,24 @@ class BaseObjectNavPolicy(BasePolicy):
         vqa_prompt: str = "Is this ",
         coco_threshold: float = 0.8,
         non_coco_threshold: float = 0.4,
+        grounding_dino_host: str = "localhost",
+        grounding_dino_port: int = 12181,
+        yolov7_host: str = "localhost",
+        yolov7_port: int = 12184,
+        mobile_sam_host: str = "localhost",
+        mobile_sam_port: int = 12183,
+        blip2_host: str = "localhost",
+        blip2_port: int = 12185,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super().__init__()
-        self._object_detector = GroundingDINOClient(port=int(os.environ.get("GROUNDING_DINO_PORT", "12181")))
-        self._coco_object_detector = YOLOv7Client(port=int(os.environ.get("YOLOV7_PORT", "12184")))
-        self._mobile_sam = MobileSAMClient(port=int(os.environ.get("SAM_PORT", "12183")))
+        self._object_detector = GroundingDINOClient(host=grounding_dino_host, port=grounding_dino_port)
+        self._coco_object_detector = YOLOv7Client(host=yolov7_host, port=yolov7_port)
+        self._mobile_sam = MobileSAMClient(host=mobile_sam_host, port=mobile_sam_port)
         self._use_vqa = use_vqa
         if use_vqa:
-            self._vqa = BLIP2Client(port=int(os.environ.get("BLIP2_PORT", "12185")))
+            self._vqa = BLIP2Client(host=blip2_host, port=blip2_port)
         self._pointnav_policy = WrappedPointNavResNetPolicy(pointnav_policy_path)
         self._object_map: ObjectPointCloudMap = ObjectPointCloudMap(erosion_size=object_map_erosion_size)
         self._depth_image_shape = tuple(depth_image_shape)

@@ -55,8 +55,8 @@ class BLIP2ITM:
 
 
 class BLIP2ITMClient:
-    def __init__(self, port: int = 12182):
-        self.url = f"http://localhost:{port}/blip2itm"
+    def __init__(self, host: str = "localhost", port: int = 12182):
+        self.url = f"http://{host}:{port}/blip2itm"
 
     def cosine(self, image: np.ndarray, txt: str) -> float:
         print(f"BLIP2ITMClient.cosine: {image.shape}, {txt}")

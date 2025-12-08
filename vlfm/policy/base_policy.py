@@ -15,6 +15,7 @@ class BasePolicy(Policy):
     """The bare minimum needed to load a policy for evaluation using ppo_trainer.py"""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        
         super().__init__()
 
     @property

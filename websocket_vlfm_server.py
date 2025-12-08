@@ -6,28 +6,36 @@ environment. It receives RGB-D observations via WebSocket and returns navigation
 computed by the VLFM policy with visual odometry.
 
 Requirements:
-    1. Start BLIP2-ITM server first:
+    1. Configure settings in behavior.yaml file
+    
+    2. Start BLIP2-ITM server first:
        python -m vlfm.vlm.blip2itm --port 12182
     
-    2. Start this WebSocket server:
-       python websocket_vlfm_server.py --port 8000 --target chair
+    3. Start this WebSocket server:
+       python websocket_vlfm_server.py
     
-    3. Run BEHAVIOR environment client:
+    4. Run BEHAVIOR environment client:
        python behavior_env_web.py --host localhost --port 8000
 
 Usage Examples:
-    # Default settings (target=chair, zed camera)
+    # Use default configuration from behavior.yaml
     python websocket_vlfm_server.py
     
-    # Custom target and camera
-    python websocket_vlfm_server.py --target bottle --camera left
+    # Override specific settings
+    python websocket_vlfm_server.py --target bottle --camera left --port 9000
     
-    # Full configuration
-    python websocket_vlfm_server.py --port 9000 --target chair --camera zed \
-        --camera-fx 400.0 --visualize --verbose
+    # Use custom configuration file
+    python websocket_vlfm_server.py --config my_behavior.yaml
+    
+    # Enable visualization and verbose logging
+    python websocket_vlfm_server.py --visualize --verbose
+
+Configuration:
+    All parameters are configured in behavior.yaml. Command-line arguments
+    can override specific settings without modifying the config file.
 
 Author: VLFM BEHAVIOR-1K Integration
-Date: 2025-11-26
+Date: 2025-11-28
 """
 
 import argparse
@@ -39,17 +47,54 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import msgpack
+import functools
 import numpy as np
 import torch
 import websockets
+import yaml
+import cv2
 
 # Add vlfm to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# NumPy array support for msgpack (same as simple_websocket_server)
+def pack_array(obj):
+    """Pack NumPy arrays for msgpack serialization."""
+    if (isinstance(obj, (np.ndarray, np.generic))) and obj.dtype.kind in ("V", "O", "c"):
+        raise ValueError(f"Unsupported dtype: {obj.dtype}")
+
+    if isinstance(obj, np.ndarray):
+        return {
+            b"__ndarray__": True,
+            b"data": obj.tobytes(),
+            b"dtype": obj.dtype.str,
+            b"shape": obj.shape,
+        }
+
+    if isinstance(obj, np.generic):
+        return {b"__npgeneric__": True, b"data": obj.item(), b"dtype": obj.dtype.str}
+
+    return obj
+
+
+def unpack_array(obj):
+    """Unpack NumPy arrays from msgpack."""
+    if b"__ndarray__" in obj:
+        return np.ndarray(buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"])
+
+    if b"__npgeneric__" in obj:
+        return np.dtype(obj[b"dtype"]).type(obj[b"data"])
+
+    return obj
+
+
+# Create packer/unpacker with NumPy support
+packb = functools.partial(msgpack.packb, default=pack_array)
+unpackb = functools.partial(msgpack.unpackb, object_hook=unpack_array)
+
 from vlfm.policy.behavior_policies import BehaviorITMPolicyV2
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+# Setup logging (will be reconfigured after loading config)
 logger = logging.getLogger("vlfm_websocket_server")
 
 
@@ -59,84 +104,78 @@ class VLFMBehaviorPolicy:
     Integrates BehaviorITMPolicyV2 for object-goal navigation with visual odometry.
     """
 
-    # Camera configuration mapping
-    CAMERA_CONFIGS = {
-        "left": {
-            "rgb_key": "robot_r1::robot_r1:left_realsense_link:Camera:0::rgb",
-            "depth_key": "robot_r1::robot_r1:left_realsense_link:Camera:0::depth",
-            "width": 480,
-            "height": 480,
-        },
-        "right": {
-            "rgb_key": "robot_r1::robot_r1:right_realsense_link:Camera:0::rgb",
-            "depth_key": "robot_r1::robot_r1:right_realsense_link:Camera:0::depth",
-            "width": 480,
-            "height": 480,
-        },
-        "zed": {
-            "rgb_key": "robot_r1::robot_r1:zed_link:Camera:0::rgb",
-            "depth_key": "robot_r1::robot_r1:zed_link:Camera:0::depth",
-            "width": 720,
-            "height": 720,
-        },
-    }
-
-    def __init__(
-        self,
-        target_object: str = "chair",
-        camera_name: str = "zed",
-        camera_fx: Optional[float] = None,
-        camera_fy: Optional[float] = None,
-        min_depth: float = 0.1,
-        max_depth: float = 10.0,
-        text_prompt: Optional[str] = None,
-        visualize: bool = False,
-        action_dim: int = 23,
-    ):
+    def __init__(self, config: Dict[str, Any]):
         """
         Initialize VLFM policy for BEHAVIOR environment.
 
         Args:
-            target_object: Name of target object to navigate to
-            camera_name: Which camera to use ('left', 'right', or 'zed')
-            camera_fx: Camera focal length in x (auto-calculated if None)
-            camera_fy: Camera focal length in y (auto-calculated if None)
-            min_depth: Minimum valid depth value (meters)
-            max_depth: Maximum valid depth value (meters)
-            text_prompt: Custom text prompt for ITM model
-            visualize: Whether to generate visualization outputs
-            action_dim: Dimension of action space (23 for R1Pro robot)
+            config: Configuration dictionary loaded from behavior.yaml
         """
-        if camera_name not in self.CAMERA_CONFIGS:
-            raise ValueError(f"Invalid camera_name: {camera_name}. Must be one of {list(self.CAMERA_CONFIGS.keys())}")
-
-        self.target_object = target_object
-        self.camera_name = camera_name
-        self.camera_config = self.CAMERA_CONFIGS[camera_name]
-        self.action_dim = action_dim
+        # Extract configuration
+        self.target_object = config["target"]["object"]
+        self.camera_name = config["camera"]["name"]
+        self.camera_configs = config["camera_configs"]
+        self.action_dim = config["policy"]["action_dim"]
         self.step_count = 0
 
+        if self.camera_name not in self.camera_configs:
+            raise ValueError(f"Invalid camera_name: {self.camera_name}. Must be one of {list(self.camera_configs.keys())}")
+
+        self.camera_config = self.camera_configs[self.camera_name]
+
+        # Camera parameters
+        camera_fx = config["camera"]["fx"]
+        camera_fy = config["camera"]["fy"]
+        min_depth = config["camera"]["min_depth"]
+        max_depth = config["camera"]["max_depth"]
+        
         # Auto-calculate focal lengths if not provided (assume 90° FOV)
         if camera_fx is None:
             camera_fx = self.camera_config["width"] / 2.0
         if camera_fy is None:
             camera_fy = self.camera_config["height"] / 2.0
 
-        # Default text prompt if not provided
-        if text_prompt is None:
-            text_prompt = "This place looks like it has a target_object | " "This place looks promising for exploration"
+        # Text prompt and visualization
+        text_prompt = config["policy"]["text_prompt"]
+        visualize = config["policy"]["visualize"]
+
+        # VLM server configurations
+        vlm_servers = config["vlm_servers"]
+        blip2itm_host = vlm_servers["blip2itm"]["host"]
+        blip2itm_port = vlm_servers["blip2itm"]["port"]
+        grounding_dino_host = vlm_servers["grounding_dino"]["host"]
+        grounding_dino_port = vlm_servers["grounding_dino"]["port"]
+        yolov7_host = vlm_servers["yolov7"]["host"]
+        yolov7_port = vlm_servers["yolov7"]["port"]
+        mobile_sam_host = vlm_servers["mobile_sam"]["host"]
+        mobile_sam_port = vlm_servers["mobile_sam"]["port"]
+        blip2_host = vlm_servers["blip2"]["host"]
+        blip2_port = vlm_servers["blip2"]["port"]
+        use_vqa = vlm_servers["blip2"].get("enabled", False)
+        
+        pointnav_policy_path = config["policy"].get("pointnav_policy_path", None)
+        depth_image_shape = (self.camera_config["height"], self.camera_config["width"])
+        pointnav_stop_radius = config["policy"].get("pointnav_stop_radius", 0.2)
+        object_map_erosion_size= config["policy"].get("object_map_erosion_size", 5)
 
         logger.info("=" * 80)
         logger.info("Initializing BehaviorITMPolicyV2...")
-        logger.info(f"  Target object: {target_object}")
-        logger.info(f"  Selected camera: {camera_name} ({self.camera_config['width']}x{self.camera_config['height']})")
+        logger.info(f"  Target object: {self.target_object}")
+        logger.info(f"  Selected camera: {self.camera_name} ({self.camera_config['width']}x{self.camera_config['height']})")
         logger.info(f"  Camera params: fx={camera_fx:.1f}, fy={camera_fy:.1f}")
         logger.info(f"  Depth range: [{min_depth}, {max_depth}] meters")
         logger.info(f"  Text prompt: {text_prompt}")
         logger.info("=" * 80)
+        logger.info("VLM Server Configurations:")
+        logger.info(f"  BLIP2-ITM:      {blip2itm_host}:{blip2itm_port}")
+        logger.info(f"  Grounding DINO: {grounding_dino_host}:{grounding_dino_port}")
+        logger.info(f"  YOLOv7:         {yolov7_host}:{yolov7_port}")
+        logger.info(f"  Mobile SAM:     {mobile_sam_host}:{mobile_sam_port}")
+        logger.info(f"  BLIP2 (VQA):    {blip2_host}:{blip2_port} (enabled={use_vqa})")
+        logger.info("=" * 80)
 
         try:
-            # Initialize VLFM policy with visual odometry
+            # Initialize VLFM policy with visual odometry and VLM server configs
             self.policy = BehaviorITMPolicyV2(
                 camera_fx=camera_fx,
                 camera_fy=camera_fy,
@@ -144,6 +183,27 @@ class VLFMBehaviorPolicy:
                 max_depth=max_depth,
                 text_prompt=text_prompt,
                 visualize=visualize,
+                # BLIP2-ITM server config
+                blip2itm_host=blip2itm_host,
+                blip2itm_port=blip2itm_port,
+                # Object detection servers
+                grounding_dino_host=grounding_dino_host,
+                grounding_dino_port=grounding_dino_port,
+                yolov7_host=yolov7_host,
+                yolov7_port=yolov7_port,
+                # Segmentation server
+                mobile_sam_host=mobile_sam_host,
+                mobile_sam_port=mobile_sam_port,
+                # VQA server (optional)
+                use_vqa=use_vqa,
+                blip2_host=blip2_host,
+                blip2_port=blip2_port,
+                
+                pointnav_policy_path = pointnav_policy_path,
+                depth_image_shape=depth_image_shape,
+                pointnav_stop_radius=pointnav_stop_radius,
+                object_map_erosion_size=object_map_erosion_size,
+                
             )
             logger.info("✓ BehaviorITMPolicyV2 initialized successfully")
             logger.info("  - Visual odometry enabled (SimpleVisualOdometry)")
@@ -203,6 +263,7 @@ class VLFMBehaviorPolicy:
         self.step_count += 1
 
         try:
+            
             # Extract RGB and depth from selected camera
             rgb, depth = self._extract_rgbd(obs)
 
@@ -220,13 +281,41 @@ class VLFMBehaviorPolicy:
                 )
                 if "task_id" in obs:
                     logger.info(f"  Task ID: {obs['task_id']}")
-
             # Prepare observation for VLFM policy
             policy_obs = {
                 "rgb": rgb,  # (H, W, 3) uint8
                 "depth": depth,  # (H, W) float32 in meters
                 "objectgoal": self.target_object,
             }
+
+            # Save visualization for debugging
+            try:
+                
+                # Normalize depth for visualization (0-5m range mapped to 0-255)
+                depth_vis = np.clip(depth, 0, 5.0) / 5.0
+                depth_vis = (depth_vis * 255).astype(np.uint8)
+                depth_vis = cv2.cvtColor(depth_vis, cv2.COLOR_GRAY2BGR)
+                
+                # Resize depth to match RGB if needed (though they should match based on config)
+                if depth_vis.shape[:2] != rgb.shape[:2]:
+                    depth_vis = cv2.resize(depth_vis, (rgb.shape[1], rgb.shape[0]))
+                
+                # Concatenate horizontally
+                vis_img = np.hstack((rgb, depth_vis))
+                
+                # Add text info
+                text = f"Step: {self.step_count} | Target: {self.target_object}"
+                cv2.putText(vis_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.7, (0, 255, 0), 2, cv2.LINE_AA)
+                
+                # Save to absolute path
+                save_path = f"/home/wxy/Experiments/vlfm/vis_debug/step_{self.step_count:04d}.jpg"
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                # Convert RGB to BGR for OpenCV saving
+                cv2.imwrite(save_path, cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
+                
+            except Exception as e:
+                logger.warning(f"Failed to save debug visualization: {e}")
 
             # Get action from VLFM policy
             action_tensor, self.rnn_hidden_states = self.policy.act(
@@ -236,7 +325,7 @@ class VLFMBehaviorPolicy:
                 masks=self.masks,
                 deterministic=True,
             )
-
+            logger.info(f"Step {self.step_count}: VLFM policy action tensor: {action_tensor}")
             # Extract action values: (angular_vel, linear_vel)
             vlfm_action = action_tensor.cpu().numpy()[0]  # Shape: (2,)
             angular_vel = float(vlfm_action[0])
@@ -253,10 +342,11 @@ class VLFMBehaviorPolicy:
 
             # Map to base control (adjust indices based on actual R1Pro action space)
             # TODO: Verify correct action indices from R1Pro documentation
-            robot_action[0] = angular_vel  # Base rotation (yaw)
-            robot_action[1] = linear_vel  # Base forward velocity
+            robot_action[2] = angular_vel  # Base rotation (yaw)
+            robot_action[0] = linear_vel  # Base forward velocity
+            robot_action[3] = -0.2
             # robot_action[2] = 0.0        # Base lateral velocity (if applicable)
-
+            print(f"robot_action: {robot_action}")
             self.prev_actions = action_tensor
 
             return robot_action
@@ -295,10 +385,6 @@ class VLFMBehaviorPolicy:
             if rgb.shape[2] == 4:
                 rgb = rgb[:, :, :3]  # Drop alpha channel
 
-            # Ensure uint8
-            if rgb.dtype != np.uint8:
-                rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-
             # Extract depth
             if depth_key not in obs:
                 logger.error(f"Depth key '{depth_key}' not found in observation")
@@ -327,23 +413,28 @@ class VLFMBehaviorPolicy:
             return None, None
 
 
-async def handle_client(websocket, path, policy: VLFMBehaviorPolicy):
+async def handle_client(websocket, policy: VLFMBehaviorPolicy):
     """
     Handle WebSocket client connection.
 
     Args:
         websocket: WebSocket connection object
-        path: Connection path
         policy: VLFMBehaviorPolicy instance to generate actions
     """
     client_address = websocket.remote_address
     logger.info(f"Client connected from {client_address}")
 
     try:
+        # Send server metadata as first message (expected by clients)
+        metadata = {"action_dim": policy.action_dim, "server": "vlfm_websocket_server"}
+        metadata_bytes = packb(metadata)
+        await websocket.send(metadata_bytes)
+        logger.info("Sent server metadata to client")
+
         async for message in websocket:
             try:
-                # Deserialize observation using msgpack
-                obs = msgpack.unpackb(message, raw=False)
+                # Deserialize observation using msgpack with NumPy support
+                obs = unpackb(message)
 
                 # Check if this is a reset signal
                 if isinstance(obs, dict) and obs.get("reset", False):
@@ -352,7 +443,7 @@ async def handle_client(websocket, path, policy: VLFMBehaviorPolicy):
 
                     # Send acknowledgment
                     response = {"status": "reset_ok"}
-                    response_bytes = msgpack.packb(response, use_bin_type=True)
+                    response_bytes = packb(response)
                     await websocket.send(response_bytes)
                     continue
 
@@ -362,18 +453,16 @@ async def handle_client(websocket, path, policy: VLFMBehaviorPolicy):
                 # Prepare response
                 response = {"action": action}
 
-                # Serialize and send response
-                response_bytes = msgpack.packb(response, use_bin_type=True)
+                # Serialize and send response with NumPy support
+                response_bytes = packb(response)
                 await websocket.send(response_bytes)
 
             except msgpack.exceptions.ExtraData as e:
                 logger.error(f"msgpack ExtraData error: {e}")
-                error_response = msgpack.packb({"error": f"msgpack ExtraData - {str(e)}"}, use_bin_type=True)
-                await websocket.send(error_response)
+                await websocket.send(packb({"error": f"msgpack ExtraData - {str(e)}"}))
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
-                error_response = msgpack.packb({"error": str(e)}, use_bin_type=True)
-                await websocket.send(error_response)
+                await websocket.send(packb({"error": str(e)}))
 
     except websockets.exceptions.ConnectionClosedOK:
         logger.info(f"Client {client_address} disconnected normally")
@@ -385,42 +474,28 @@ async def handle_client(websocket, path, policy: VLFMBehaviorPolicy):
         logger.info(f"Connection closed with {client_address}")
 
 
-async def main(
-    host: str = "0.0.0.0",
-    port: int = 8000,
-    target_object: str = "chair",
-    camera_name: str = "zed",
-    camera_fx: Optional[float] = None,
-    camera_fy: Optional[float] = None,
-    min_depth: float = 0.1,
-    max_depth: float = 10.0,
-    text_prompt: Optional[str] = None,
-    visualize: bool = False,
-    action_dim: int = 23,
-):
+async def main(config: Dict[str, Any]):
     """
     Start the WebSocket server with VLFM policy.
 
     Args:
-        host: Host address to bind to
-        port: Port to listen on
-        target_object: Target object name
-        camera_name: Camera to use ('left', 'right', or 'zed')
-        camera_fx: Camera focal length x (auto if None)
-        camera_fy: Camera focal length y (auto if None)
-        min_depth: Minimum depth in meters
-        max_depth: Maximum depth in meters
-        text_prompt: Custom text prompt
-        visualize: Enable visualization
-        action_dim: Action space dimension
+        config: Configuration dictionary loaded from behavior.yaml
     """
+    # Extract server configuration
+    host = config["server"]["host"]
+    port = config["server"]["port"]
+    max_size = config["server"]["max_message_size"]
+    ping_interval = config["server"]["ping_interval"]
+    ping_timeout = config["server"]["ping_timeout"]
+    
     # Check if BLIP2ITM server is accessible
-    blip2_port = int(os.environ.get("BLIP2ITM_PORT", "12182"))
+    blip2_host = config["blip2itm"]["host"]
+    blip2_port = config["blip2itm"]["port"]
     logger.info("")
     logger.info("=" * 80)
     logger.info("PREREQUISITES CHECK")
     logger.info("=" * 80)
-    logger.info(f"BLIP2-ITM server should be running at: http://localhost:{blip2_port}/blip2itm")
+    logger.info(f"BLIP2-ITM server should be running at: http://{blip2_host}:{blip2_port}/blip2itm")
     logger.warning("If not started yet, run in another terminal:")
     logger.warning(f"  python -m vlfm.vlm.blip2itm --port {blip2_port}")
     logger.info("=" * 80)
@@ -428,17 +503,7 @@ async def main(
 
     # Initialize policy
     try:
-        policy = VLFMBehaviorPolicy(
-            target_object=target_object,
-            camera_name=camera_name,
-            camera_fx=camera_fx,
-            camera_fy=camera_fy,
-            min_depth=min_depth,
-            max_depth=max_depth,
-            text_prompt=text_prompt,
-            visualize=visualize,
-            action_dim=action_dim,
-        )
+        policy = VLFMBehaviorPolicy(config)
     except Exception as e:
         logger.error(f"Failed to initialize VLFM policy: {e}")
         logger.error("Make sure BLIP2-ITM server is running!")
@@ -449,9 +514,9 @@ async def main(
     logger.info("VLFM WEBSOCKET SERVER - READY")
     logger.info("=" * 80)
     logger.info(f"Server address: ws://{host}:{port}")
-    logger.info(f"Target object: {target_object}")
-    logger.info(f"Camera: {camera_name}")
-    logger.info(f"Action dimension: {action_dim}")
+    logger.info(f"Target object: {config['target']['object']}")
+    logger.info(f"Camera: {config['camera']['name']}")
+    logger.info(f"Action dimension: {config['policy']['action_dim']}")
     logger.info("=" * 80)
     logger.info("Waiting for BEHAVIOR environment client to connect...")
     logger.info("")
@@ -461,16 +526,73 @@ async def main(
     logger.info("=" * 80)
     logger.info("")
 
+    # Helper to handle HTTP requests (like health checks)
+    def process_request(connection, request):
+        """
+        Handle HTTP requests before WebSocket upgrade.
+        - /healthz: Return 200 OK for health checks
+        - Other non-WebSocket requests: Return 426 Upgrade Required
+        - WebSocket upgrade requests: Allow to proceed (return None)
+        """
+        from websockets.datastructures import Headers
+        from websockets.http11 import Response
+
+        # Health check
+        if request.path == "/healthz":
+            logger.info("Health check request received")
+            return Response(
+                status_code=200,
+                reason_phrase="OK",
+                headers=Headers([("Content-Type", "text/plain")]),
+                body=b"OK\n",
+            )
+
+        # Validate Upgrade headers
+        conn_hdr = request.headers.get("Connection", "")
+        upgrade_hdr = request.headers.get("Upgrade", "")
+
+        if "upgrade" in conn_hdr.lower() and "websocket" in upgrade_hdr.lower():
+            return None
+
+        logger.warning(f"Non-WebSocket request to {request.path}")
+        return Response(
+            status_code=426,
+            reason_phrase="Upgrade Required",
+            headers=Headers([("Content-Type", "text/plain")]),
+            body=b"426 Upgrade Required: This endpoint expects a WebSocket connection.\n",
+        )
+
     # Start WebSocket server
     async with websockets.serve(
-        lambda ws, path: handle_client(ws, path, policy),
+        lambda ws: handle_client(ws, policy),
         host,
         port,
-        max_size=100 * 1024 * 1024,  # 100 MB max message size (for large images)
-        ping_interval=20,  # Send ping every 20 seconds
-        ping_timeout=10,  # Wait 10 seconds for pong
+        process_request=process_request,
+        max_size=max_size,
+        ping_interval=ping_interval,
+        ping_timeout=ping_timeout,
     ):
         await asyncio.Future()  # Run forever
+
+
+def load_config(config_path: str = "behavior.yaml") -> Dict[str, Any]:
+    """
+    Load configuration from YAML file.
+    
+    Args:
+        config_path: Path to configuration file
+        
+    Returns:
+        Configuration dictionary
+    """
+    config_file = Path(__file__).parent / config_path
+    if not config_file.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_file}")
+    
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    return config
 
 
 if __name__ == "__main__":
@@ -478,53 +600,74 @@ if __name__ == "__main__":
         description="VLFM WebSocket server for BEHAVIOR environment control",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host address to bind to")
-    parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
     parser.add_argument(
-        "--target", type=str, default="chair", help="Target object to navigate to (e.g., chair, bottle, apple)"
+        "--config", 
+        type=str, 
+        default="behavior.yaml", 
+        help="Path to configuration file (YAML)"
     )
     parser.add_argument(
-        "--camera", type=str, default="zed", choices=["left", "right", "zed"], help="Which camera to use for navigation"
+        "--target", 
+        type=str, 
+        default=None, 
+        help="Override target object from config"
     )
     parser.add_argument(
-        "--camera-fx", type=float, default=None, help="Camera focal length in x direction (auto-calculated if not set)"
+        "--camera", 
+        type=str, 
+        default=None, 
+        choices=["left", "right", "zed"], 
+        help="Override camera selection from config"
     )
     parser.add_argument(
-        "--camera-fy", type=float, default=None, help="Camera focal length in y direction (auto-calculated if not set)"
+        "--port", 
+        type=int, 
+        default=None, 
+        help="Override server port from config"
     )
-    parser.add_argument("--min-depth", type=float, default=0.1, help="Minimum valid depth in meters")
-    parser.add_argument("--max-depth", type=float, default=10.0, help="Maximum valid depth in meters")
-    parser.add_argument("--text-prompt", type=str, default=None, help="Custom text prompt for ITM model")
     parser.add_argument(
-        "--visualize", action="store_true", help="Enable visualization outputs (value maps, trajectories)"
+        "--visualize", 
+        action="store_true", 
+        help="Enable visualization (overrides config)"
     )
-    parser.add_argument("--action-dim", type=int, default=23, help="Action space dimension for R1Pro robot")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (debug level)")
+    parser.add_argument(
+        "--verbose", 
+        action="store_true", 
+        help="Enable verbose logging (debug level)"
+    )
 
     args = parser.parse_args()
 
-    # Set logging level
+    # Load configuration
+    try:
+        config = load_config(args.config)
+    except Exception as e:
+        print(f"Error loading configuration: {e}")
+        sys.exit(1)
+
+    # Apply command-line overrides
+    if args.target is not None:
+        config["target"]["object"] = args.target
+    if args.camera is not None:
+        config["camera"]["name"] = args.camera
+    if args.port is not None:
+        config["server"]["port"] = args.port
+    if args.visualize:
+        config["policy"]["visualize"] = True
+
+    # Configure logging
+    log_level = logging.DEBUG if args.verbose else getattr(logging, config["logging"]["level"])
+    logging.basicConfig(
+        level=log_level,
+        format=config["logging"]["format"]
+    )
+    
     if args.verbose:
-        logger.setLevel(logging.DEBUG)
         logging.getLogger("vlfm").setLevel(logging.DEBUG)
 
     # Run server
     try:
-        asyncio.run(
-            main(
-                host=args.host,
-                port=args.port,
-                target_object=args.target,
-                camera_name=args.camera,
-                camera_fx=args.camera_fx,
-                camera_fy=args.camera_fy,
-                min_depth=args.min_depth,
-                max_depth=args.max_depth,
-                text_prompt=args.text_prompt,
-                visualize=args.visualize,
-                action_dim=args.action_dim,
-            )
-        )
+        asyncio.run(main(config))
     except KeyboardInterrupt:
         logger.info("")
         logger.info("=" * 80)

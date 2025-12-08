@@ -136,6 +136,10 @@ def load_pointnav_policy(file_path: str) -> PointNavResNetTensorOutputPolicy:
     Returns:
         PointNavResNetTensorOutputPolicy: The policy.
     """
+    
+    from omegaconf.dictconfig import DictConfig
+    # torch.serialization.add_safe_globals([DictConfig])
+    
     if HABITAT_BASELINES_AVAILABLE:
         obs_space = SpaceDict(
             {
@@ -149,6 +153,8 @@ def load_pointnav_policy(file_path: str) -> PointNavResNetTensorOutputPolicy:
             }
         )
         action_space = Discrete(4)
+        
+        
         if habitat_version == "0.1.5":
             pointnav_policy = PointNavResNetTensorOutputPolicy(
                 obs_space,
@@ -171,6 +177,7 @@ def load_pointnav_policy(file_path: str) -> PointNavResNetTensorOutputPolicy:
             pointnav_policy.net = PointNavResNetNet(discrete_actions=True, no_fwd_dict=True)
             state_dict = torch.load(file_path + ".state_dict", map_location="cpu")
         else:
+            
             ckpt_dict = torch.load(file_path, map_location="cpu")
             pointnav_policy = PointNavResNetTensorOutputPolicy.from_config(ckpt_dict["config"], obs_space, action_space)
             state_dict = ckpt_dict["state_dict"]
