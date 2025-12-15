@@ -216,6 +216,36 @@ class ValueMap(BaseMap):
                 for pos, marker_kwargs in markers:
                     map_img = self._traj_vis.draw_circle(map_img, pos, **marker_kwargs)
 
+        # # Add colorbar legend
+        # h, w = map_img.shape[:2]
+        # legend_w = 60
+        # legend_img = np.ones((h, legend_w, 3), dtype=np.uint8) * 255
+        
+        # # Draw gradient bar
+        # bar_x = 10
+        # bar_w = 20
+        # bar_h = h - 40
+        # bar_y = 20
+        
+        # # Create a gradient image for the bar
+        # gradient = np.linspace(1, 0, bar_h).reshape(-1, 1)
+        # gradient_img = monochannel_to_inferno_rgb(gradient)
+        # # Resize to bar width
+        # gradient_bar = cv2.resize(gradient_img, (bar_w, bar_h))
+        
+        # # Place gradient bar on legend image
+        # legend_img[bar_y:bar_y+bar_h, bar_x:bar_x+bar_w] = gradient_bar
+            
+        # # Add text labels
+        # font = cv2.FONT_HERSHEY_SIMPLEX
+        # font_scale = 0.4
+        # cv2.putText(legend_img, "1.0", (bar_x + bar_w + 2, bar_y + 10), font, font_scale, (0, 0, 0), 1)
+        # cv2.putText(legend_img, "0.5", (bar_x + bar_w + 2, bar_y + bar_h // 2), font, font_scale, (0, 0, 0), 1)
+        # cv2.putText(legend_img, "0.0", (bar_x + bar_w + 2, bar_y + bar_h), font, font_scale, (0, 0, 0), 1)
+        
+        # # Concatenate legend to the map
+        # map_img = np.hstack((map_img, legend_img))
+
         return map_img
 
     def _process_local_data(self, depth: np.ndarray, fov: float, min_depth: float, max_depth: float) -> np.ndarray:

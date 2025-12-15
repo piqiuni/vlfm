@@ -1,5 +1,6 @@
 # Copyright (c) 2023 Boston Dynamics AI Institute LLC. All rights reserved.
 
+import logging
 import os
 from dataclasses import dataclass, fields
 from typing import Any, Dict, List, Tuple, Union
@@ -49,7 +50,8 @@ class BaseObjectNavPolicy(BasePolicy):
         visualize: bool = True,
         compute_frontiers: bool = True,
         min_obstacle_height: float = 0.15,
-        max_obstacle_height: float = 0.88,
+        # max_obstacle_height: float = 0.88,
+        max_obstacle_height: float = 1.60,
         agent_radius: float = 0.18,
         obstacle_map_area_threshold: float = 1.5,
         hole_area_thresh: int = 100000,
@@ -145,10 +147,26 @@ class BaseObjectNavPolicy(BasePolicy):
             mode = "navigate"
             pointnav_action = self._pointnav(goal[:2], stop=True)
 
-        action_numpy = pointnav_action.detach().cpu().numpy()[0]
-        if len(action_numpy) == 1:
-            action_numpy = action_numpy[0]
-        print(f"Step: {self._num_steps} | Mode: {mode} | Action: {action_numpy}")
+        # action_numpy = pointnav_action.detach().cpu().numpy()[0]
+        # if len(action_numpy) == 1:
+        #     action_numpy = action_numpy[0]
+        logger = logging.getLogger("baseobjectnav")
+        action_value = pointnav_action.detach().cpu().numpy()[0]
+        action_str = ""
+        if action_value == 0:
+            action_str = "STOP"
+        elif action_value == 1:
+            action_str = "MOVE_FORWARD"
+        elif action_value == 2:
+            action_str = "TURN_LEFT"
+        elif action_value == 3:
+            action_str = "TURN_RIGHT"
+        
+        info_str = f"T: {self._num_steps} | Mode: {mode} | A: {action_str}"
+        if mode == "navigate":
+            info_str += f" | Goal: {goal} | Robot: {robot_xy}"
+        logger.info(info_str)
+        self._policy_info["action_info"] = info_str
         self._policy_info.update(self._get_policy_info(detections[0]))
         self._num_steps += 1
 
@@ -189,7 +207,8 @@ class BaseObjectNavPolicy(BasePolicy):
             target_point_cloud = np.array([])
         policy_info = {
             "target_object": self._target_object.split("|")[0],
-            "gps": str(self._observations_cache["robot_xy"] * np.array([1, -1])),
+            # "gps": str(self._observations_cache["robot_xy"] * np.array([1, -1])),
+            "gps": str(self._observations_cache["robot_xy"] * np.array([1, 1])),
             "yaw": np.rad2deg(self._observations_cache["robot_heading"]),
             "target_detected": self._object_map.has_object(self._target_object),
             "target_point_cloud": target_point_cloud,
@@ -270,6 +289,7 @@ class BaseObjectNavPolicy(BasePolicy):
         heading = self._observations_cache["robot_heading"]
         rho, theta = rho_theta(robot_xy, heading, goal)
         rho_theta_tensor = torch.tensor([[rho, theta]], device="cuda", dtype=torch.float32)
+        
         obs_pointnav = {
             "depth": image_resize(
                 self._observations_cache["nav_depth"],

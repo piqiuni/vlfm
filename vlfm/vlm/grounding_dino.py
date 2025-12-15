@@ -76,6 +76,7 @@ class GroundingDINO:
 
 class GroundingDINOClient:
     def __init__(self, host: str = "localhost", port: int = 12181):
+        host = "10.106.11.248"
         self.url = f"http://{host}:{port}/gdino"
         print(f"GroundingDINOClient url: {self.url}")
 

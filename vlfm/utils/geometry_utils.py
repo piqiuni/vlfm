@@ -236,6 +236,50 @@ def get_point_cloud(depth_image: np.ndarray, mask: np.ndarray, fx: float, fy: fl
     return cloud
 
 
+def get_point_cloud_radial(depth_image: np.ndarray, mask: np.ndarray, fx: float, fy: float) -> np.ndarray:
+    """
+    Calculates the 3D coordinates (x, y, z) of points in the depth image based on
+    the horizontal field of view (HFOV), the image width and height, the depth values,
+    and the pixel x and y coordinates.
+
+    Args:
+        depth_image (np.ndarray): 2D depth image.
+        mask (np.ndarray): 2D binary mask identifying relevant pixels.
+        fx (float): Focal length in the x direction.
+        fy (float): Focal length in the y direction.
+
+    Returns:
+        np.ndarray: Array of 3D coordinates (x, y, z) of the points in the image plane.
+    """
+    v, u = np.where(mask)
+    r = depth_image[v, u]  # 假设这里读取的是径向距离 (Radial Distance)
+    
+    cx = depth_image.shape[1] // 2
+    cy = depth_image.shape[0] // 2
+
+    # 1. 计算像素在归一化平面上的坐标 (x_norm, y_norm)
+    x_norm = (u - cx) / fx
+    y_norm = (v - cy) / fy
+
+    # 2. 修正深度计算
+    # 如果 r 是径向距离 (sqrt(x^2 + y^2 + z^2))
+    # 那么 z = r / sqrt(1 + x_norm^2 + y_norm^2)
+    # 
+    # 如果你的 depth 已经是 Z-depth，则不需要除以这个系数。
+    # 但既然你遇到了弯曲，说明很可能需要这个校正。
+    scale_factor = np.sqrt(1 + x_norm**2 + y_norm**2)
+    z = r / scale_factor 
+
+    # 3. 恢复 x, y
+    x = x_norm * z
+    y = y_norm * z
+    
+    # VLFM convention: X=Forward(Z), Y=Left(-X), Z=Up(-Y)
+    cloud = np.stack((z, -x, -y), axis=-1)
+
+    return cloud
+
+
 def get_fov(focal_length: float, image_height_or_width: int) -> float:
     """
     Given an fx and the image width, or an fy and the image height, returns the

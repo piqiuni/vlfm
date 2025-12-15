@@ -4,11 +4,12 @@ from typing import Any, Union
 
 import cv2
 import numpy as np
+import open3d as o3d
 from frontier_exploration.frontier_detection import detect_frontier_waypoints
 from frontier_exploration.utils.fog_of_war import reveal_fog_of_war
 
 from vlfm.mapping.base_map import BaseMap
-from vlfm.utils.geometry_utils import extract_yaw, get_point_cloud, transform_points
+from vlfm.utils.geometry_utils import extract_yaw, get_point_cloud, get_point_cloud_radial, transform_points
 from vlfm.utils.img_utils import fill_small_holes
 
 
@@ -91,9 +92,44 @@ class ObstacleMap(BaseMap):
                 filled_depth = fill_small_holes(depth, self._hole_area_thresh)
             scaled_depth = filled_depth * (max_depth - min_depth) + min_depth
             mask = scaled_depth < max_depth
-            point_cloud_camera_frame = get_point_cloud(scaled_depth, mask, fx, fy)
+            point_cloud_camera_frame = get_point_cloud_radial(scaled_depth, mask, fx, fy)
+            
+            
             point_cloud_episodic_frame = transform_points(tf_camera_to_episodic, point_cloud_camera_frame)
             obstacle_cloud = filter_points_by_height(point_cloud_episodic_frame, self._min_height, self._max_height)
+            
+
+            # Save point clouds for Open3D visualization
+            # try:
+            #     import os
+            #     os.makedirs("vis_debug", exist_ok=True)
+                
+            #     # Save scaled_depth
+            #     np.save("vis_debug/scaled_depth.npy", scaled_depth)
+            #     # Save as image for visualization (normalized to 0-255)
+            #     depth_vis = ((scaled_depth - min_depth) / (max_depth - min_depth) * 255).astype(np.uint8)
+            #     cv2.imwrite("vis_debug/scaled_depth.png", depth_vis)
+
+            #     # tf_camera_to_episodic
+            #     np.save("vis_debug/tf_camera_to_episodic.npy", tf_camera_to_episodic)
+
+            #     # Save camera frame point cloud
+            #     pcd_cam = o3d.geometry.PointCloud()
+            #     pcd_cam.points = o3d.utility.Vector3dVector(point_cloud_camera_frame)
+            #     o3d.io.write_point_cloud("vis_debug/point_cloud_camera.ply", pcd_cam)
+
+            #     pcd_episodic = o3d.geometry.PointCloud()
+            #     pcd_episodic.points = o3d.utility.Vector3dVector(point_cloud_episodic_frame)
+            #     o3d.io.write_point_cloud("vis_debug/point_cloud_episodic.ply", pcd_episodic)
+
+            #     # Save obstacle cloud (episodic frame)
+            #     pcd_obs = o3d.geometry.PointCloud()
+            #     pcd_obs.points = o3d.utility.Vector3dVector(obstacle_cloud)
+            #     o3d.io.write_point_cloud("vis_debug/obstacle_cloud.ply", pcd_obs)
+            # except Exception as e:
+            #     print(f"Failed to save debug data: {e}")
+
+
 
             # Populate topdown map with obstacle locations
             xy_points = obstacle_cloud[:, :2]

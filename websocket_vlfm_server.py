@@ -1,7 +1,7 @@
 """
 WebSocket Server for BEHAVIOR Environment with VLFM Policy
 
-This WebSocket server integrates BehaviorITMPolicyV2 to control robots in the BEHAVIOR
+This WebSocket server integrates BehaviorITMPolicyV3 to control robots in the BEHAVIOR
 environment. It receives RGB-D observations via WebSocket and returns navigation actions
 computed by the VLFM policy with visual odometry.
 
@@ -53,6 +53,10 @@ import torch
 import websockets
 import yaml
 import cv2
+from scipy.spatial.transform import Rotation as R
+
+
+from vlfm.utils.img_utils import reorient_rescale_map, resize_images
 
 # Add vlfm to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -92,16 +96,17 @@ def unpack_array(obj):
 packb = functools.partial(msgpack.packb, default=pack_array)
 unpackb = functools.partial(msgpack.unpackb, object_hook=unpack_array)
 
-from vlfm.policy.behavior_policies import BehaviorITMPolicyV2
+from vlfm.policy.behavior_policies import BehaviorITMPolicyV3
 
 # Setup logging (will be reconfigured after loading config)
 logger = logging.getLogger("vlfm_websocket_server")
 
+base_action = [0,0,0,-0.2,0,0,0,-0.7,1,0,0,0,0,0,0,-0.7,-1,0,0,0,0,0,0]
 
 class VLFMBehaviorPolicy:
     """
     VLFM Policy wrapper for BEHAVIOR environment.
-    Integrates BehaviorITMPolicyV2 for object-goal navigation with visual odometry.
+    Integrates BehaviorITMPolicyV3 for object-goal navigation with visual odometry.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -153,13 +158,14 @@ class VLFMBehaviorPolicy:
         blip2_port = vlm_servers["blip2"]["port"]
         use_vqa = vlm_servers["blip2"].get("enabled", False)
         
+        depth_shape = config["camera_configs"]["depth_image_shape"]
         pointnav_policy_path = config["policy"].get("pointnav_policy_path", None)
-        depth_image_shape = (self.camera_config["height"], self.camera_config["width"])
+        depth_image_shape = (depth_shape["height"], depth_shape["width"])
         pointnav_stop_radius = config["policy"].get("pointnav_stop_radius", 0.2)
         object_map_erosion_size= config["policy"].get("object_map_erosion_size", 5)
 
         logger.info("=" * 80)
-        logger.info("Initializing BehaviorITMPolicyV2...")
+        logger.info("Initializing BehaviorITMPolicyV3...")
         logger.info(f"  Target object: {self.target_object}")
         logger.info(f"  Selected camera: {self.camera_name} ({self.camera_config['width']}x{self.camera_config['height']})")
         logger.info(f"  Camera params: fx={camera_fx:.1f}, fy={camera_fy:.1f}")
@@ -176,7 +182,7 @@ class VLFMBehaviorPolicy:
 
         try:
             # Initialize VLFM policy with visual odometry and VLM server configs
-            self.policy = BehaviorITMPolicyV2(
+            self.policy = BehaviorITMPolicyV3(
                 camera_fx=camera_fx,
                 camera_fy=camera_fy,
                 min_depth=min_depth,
@@ -205,7 +211,7 @@ class VLFMBehaviorPolicy:
                 object_map_erosion_size=object_map_erosion_size,
                 
             )
-            logger.info("✓ BehaviorITMPolicyV2 initialized successfully")
+            logger.info("✓ BehaviorITMPolicyV3 initialized successfully")
             logger.info("  - Visual odometry enabled (SimpleVisualOdometry)")
             logger.info("  - Obstacle mapping enabled")
             logger.info("  - Frontier-based exploration enabled")
@@ -217,7 +223,7 @@ class VLFMBehaviorPolicy:
             raise
 
         # Episode state
-        self.masks = torch.tensor([[1.0]])  # Episode continues
+        self.masks = torch.tensor([[0]])  # Episode continues
         self.rnn_hidden_states = None
         self.prev_actions = None
 
@@ -229,7 +235,7 @@ class VLFMBehaviorPolicy:
         logger.info("=" * 80)
 
         self.step_count = 0
-        self.masks = torch.tensor([[1.0]])
+        self.masks = torch.tensor([[0]])
         self.rnn_hidden_states = None
         self.prev_actions = None
 
@@ -282,58 +288,75 @@ class VLFMBehaviorPolicy:
                 if "task_id" in obs:
                     logger.info(f"  Task ID: {obs['task_id']}")
             # Prepare observation for VLFM policy
+            
+            
+            tf_camera_to_episodic = self.get_tf_camera_to_episodic(obs)
+            
+            
             policy_obs = {
                 "rgb": rgb,  # (H, W, 3) uint8
                 "depth": depth,  # (H, W) float32 in meters
                 "objectgoal": self.target_object,
+                "robot_pos": obs["robot_pos"], 
+                "robot_ori": obs["robot_ori"],
+                "tf_camera_to_episodic": tf_camera_to_episodic,
             }
 
             # Save visualization for debugging
-            try:
+            # try:
                 
-                # Normalize depth for visualization (0-5m range mapped to 0-255)
-                depth_vis = np.clip(depth, 0, 5.0) / 5.0
-                depth_vis = (depth_vis * 255).astype(np.uint8)
-                depth_vis = cv2.cvtColor(depth_vis, cv2.COLOR_GRAY2BGR)
+            #     # Normalize depth for visualization (0-5m range mapped to 0-255)
+            #     depth_vis = np.clip(depth, 0, 5.0) / 5.0
+            #     depth_vis = (depth_vis * 255).astype(np.uint8)
+            #     depth_vis = cv2.cvtColor(depth_vis, cv2.COLOR_GRAY2BGR)
                 
-                # Resize depth to match RGB if needed (though they should match based on config)
-                if depth_vis.shape[:2] != rgb.shape[:2]:
-                    depth_vis = cv2.resize(depth_vis, (rgb.shape[1], rgb.shape[0]))
+            #     # Resize depth to match RGB if needed (though they should match based on config)
+            #     if depth_vis.shape[:2] != rgb.shape[:2]:
+            #         depth_vis = cv2.resize(depth_vis, (rgb.shape[1], rgb.shape[0]))
                 
-                # Concatenate horizontally
-                vis_img = np.hstack((rgb, depth_vis))
+            #     # Concatenate horizontally
+            #     vis_img = np.hstack((rgb, depth_vis))
                 
-                # Add text info
-                text = f"Step: {self.step_count} | Target: {self.target_object}"
-                cv2.putText(vis_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.7, (0, 255, 0), 2, cv2.LINE_AA)
+            #     # Add text info
+            #     text = f"Step: {self.step_count} | Target: {self.target_object}"
+            #     cv2.putText(vis_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
+            #                0.7, (0, 255, 0), 2, cv2.LINE_AA)
                 
-                # Save to absolute path
-                save_path = f"/home/wxy/Experiments/vlfm/vis_debug/step_{self.step_count:04d}.jpg"
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                # Convert RGB to BGR for OpenCV saving
-                cv2.imwrite(save_path, cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
+            #     # Save to absolute path
+            #     save_path = f"/home/wxy/Experiments/vlfm/vis_debug/step_{self.step_count:04d}.jpg"
+            #     os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            #     # Convert RGB to BGR for OpenCV saving
+            #     cv2.imwrite(save_path, cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
                 
-            except Exception as e:
-                logger.warning(f"Failed to save debug visualization: {e}")
+            # except Exception as e:
+            #     logger.warning(f"Failed to save debug visualization: {e}")
 
             # Get action from VLFM policy
-            action_tensor, self.rnn_hidden_states = self.policy.act(
+            action, self.rnn_hidden_states, self._policy_info = self.policy.act(
                 observations=policy_obs,
                 rnn_hidden_states=self.rnn_hidden_states,
                 prev_actions=self.prev_actions,
                 masks=self.masks,
                 deterministic=True,
             )
-            logger.info(f"Step {self.step_count}: VLFM policy action tensor: {action_tensor}")
+            
+            vis_img = self.create_frame(self._policy_info)
+            save_path_base = "/home/wxy/Experiments/vlfm/vis_debug/policy_info.jpg"
+            save_path = f"/home/wxy/Experiments/vlfm/vis_debug/step_{self.step_count:04d}_policy_info.jpg"
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            cv2.imwrite(save_path_base, cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
+            cv2.imwrite(save_path, cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
+            
+            
+            logger.info(f"Step {self.step_count}: VLFM policy action tensor: {action}")
             # Extract action values: (angular_vel, linear_vel)
-            vlfm_action = action_tensor.cpu().numpy()[0]  # Shape: (2,)
-            angular_vel = float(vlfm_action[0])
-            linear_vel = float(vlfm_action[1])
+            # vlfm_action = action_tensor.cpu().numpy()  # Shape: (2,)
+            linear_vel = float(action[0])
+            angular_vel = float(action[1])
 
             # Log non-zero actions
-            if self.step_count % 10 == 0 or abs(angular_vel) > 0.01 or abs(linear_vel) > 0.01:
-                logger.info(f"  VLFM Action: angular={angular_vel:.3f} rad/s, linear={linear_vel:.3f} m/s")
+            # if self.step_count % 10 == 0 or abs(angular_vel) > 0.01 or abs(linear_vel) > 0.01:
+            #     logger.info(f"  VLFM Action: angular={angular_vel:.3f} rad/s, linear={linear_vel:.3f} m/s")
 
             # Convert VLFM action to R1Pro robot action space
             # R1Pro action space (23D): [base_motion, arm_joints, gripper, etc.]
@@ -341,13 +364,11 @@ class VLFMBehaviorPolicy:
             robot_action = np.zeros(self.action_dim, dtype=np.float32)
 
             # Map to base control (adjust indices based on actual R1Pro action space)
-            # TODO: Verify correct action indices from R1Pro documentation
+            robot_action = np.array(base_action, dtype=np.float32)
             robot_action[2] = angular_vel  # Base rotation (yaw)
             robot_action[0] = linear_vel  # Base forward velocity
-            robot_action[3] = -0.2
-            # robot_action[2] = 0.0        # Base lateral velocity (if applicable)
-            print(f"robot_action: {robot_action}")
-            self.prev_actions = action_tensor
+            self.prev_actions = action
+            self.masks = torch.tensor([[1]])  # Episode continues
 
             return robot_action
 
@@ -402,15 +423,102 @@ class VLFMBehaviorPolicy:
 
             # Depth should already be in meters from BEHAVIOR
             # If values seem too large (e.g., in mm), convert
-            if depth.max() > 100.0:
-                logger.warning(f"Depth values seem large (max={depth.max():.1f}), converting mm to meters")
-                depth = depth / 1000.0
+            # if depth.max() > 100.0:
+            #     logger.warning(f"Depth values seem large (max={depth.max():.1f}), converting mm to meters")
+            #     depth = depth / 1000.0
 
             return rgb, depth
 
         except Exception as e:
             logger.error(f"Error extracting RGB-D: {e}", exc_info=True)
             return None, None
+
+    def get_tf_camera_to_episodic(self, obs: Dict[str, Any]) -> np.ndarray:
+        cam_poses = obs['robot_r1::cam_rel_poses']
+        # x,y,z,x,y,z,w
+        zed_pose = cam_poses[14:21]
+        
+        # Convert zed_pose [x, y, z, qx, qy, qz, qw] to 4x4 transformation matrix
+        tf_camera_to_robot = np.eye(4)
+        tf_camera_to_robot[:3, 3] = zed_pose[:3]  # Translation
+        tf_camera_to_robot[:3, :3] = R.from_quat(zed_pose[3:]).as_matrix()  # Rotation
+        
+        theta = np.radians(-90)
+        c, s = np.cos(theta), np.sin(theta)
+        rot_x = np.array([
+            [1, 0, 0, 0],
+            [0, c, -s, 0],
+            [0, s, c, 0],
+            [0, 0, 0, 1]
+        ])
+        tf_camera_to_robot = tf_camera_to_robot @ rot_x
+        
+        theta = np.radians(90)
+        c, s = np.cos(theta), np.sin(theta)
+        rot_z = np.array([
+            [c, -s, 0, 0],
+            [s, c, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ])
+        tf_camera_to_robot = tf_camera_to_robot @ rot_z
+        
+        # Get robot pose in episodic frame
+        robot_pos = np.array(obs["robot_pos"])  # [x, y, z]
+        robot_ori = np.array(obs["robot_ori"])  # [x, y, z, w]
+        
+        tf_robot_to_episodic = np.eye(4)
+        tf_robot_to_episodic[:3, 3] = robot_pos
+        tf_robot_to_episodic[:3, :3] = R.from_quat(robot_ori).as_matrix()
+        
+        # Combine transformations: Camera -> Robot -> Episodic
+        tf_camera_to_episodic = tf_robot_to_episodic @ tf_camera_to_robot
+        return tf_camera_to_episodic
+
+    def create_frame(self, policy_infos: Dict[str, Any]) -> np.ndarray:
+        vis_imgs = []
+        for k in ["annotated_rgb", "annotated_depth", "obstacle_map", "value_map"]:
+            img = policy_infos[k]
+            if "map" in k:
+                img = reorient_rescale_map(img)
+            if k == "annotated_depth" and np.array_equal(img, np.ones_like(img) * 255):
+                # Put text in the middle saying "Target not curently detected"
+                text = "Target not currently detected"
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1, 1)[0]
+                cv2.putText(
+                    img,
+                    text,
+                    (img.shape[1] // 2 - text_size[0] // 2, img.shape[0] // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 0, 0),
+                    1,
+                )
+            vis_imgs.append(img)
+        vis_img = np.hstack(resize_images(vis_imgs, match_dimension="height"))
+        
+        # Add top banner for info
+        h, w = vis_img.shape[:2]
+        banner_h = 30
+        banner = np.ones((banner_h, w, 3), dtype=np.uint8) * 255
+        
+        # Draw text on banner
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 2
+        color = (0, 0, 0)
+        
+        action_info = policy_infos.get("action_info", "N/A")
+        target_object = policy_infos.get("target_object", "N/A")
+        
+        cv2.putText(banner, f"Target: {target_object}", (10, 25), font, font_scale, color, thickness)
+        cv2.putText(banner, f"Info: {action_info}", (40, 25), font, font_scale, color, thickness)
+        
+        # Stack banner on top
+        vis_img = np.vstack((banner, vis_img))
+        
+        return vis_img
+
 
 
 async def handle_client(websocket, policy: VLFMBehaviorPolicy):

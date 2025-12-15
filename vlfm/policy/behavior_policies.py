@@ -3,15 +3,15 @@
 """
 BEHAVIOR-1K Simulator Policy Adapter with Visual Odometry.
 
-This module provides policy adapters for running ITMPolicyV2 in BEHAVIOR-1K simulator
+This module provides policy adapters for running ITMPolicyV3 in BEHAVIOR-1K simulator
 or other simulation platforms with limited sensor inputs. It addresses the challenge of
 using policies designed for rich sensor suites (multi-camera, GPS, compass) in environments
 that only provide a single RGB-D camera stream.
 
 Key Features:
     - SimpleVisualOdometry: RGB-D based visual odometry using ORB features for pose estimation
-    - BehaviorMixin: Adapter layer that bridges single-camera observations to ITMPolicyV2 requirements
-    - BehaviorITMPolicyV2: Complete policy implementation ready for BEHAVIOR-1K integration
+    - BehaviorMixin: Adapter layer that bridges single-camera observations to ITMPolicyV3 requirements
+    - BehaviorITMPolicyV3: Complete policy implementation ready for BEHAVIOR-1K integration
 
 Main Components:
     1. SimpleVisualOdometry: Estimates robot pose from consecutive RGB-D frames using feature
@@ -19,21 +19,21 @@ Main Components:
        SLAM systems (e.g., ORB-SLAM3, pyslam) by implementing the same interface.
 
     2. BehaviorMixin: Transforms single RGB-D camera observations into the format expected
-       by ITMPolicyV2, including:
+       by ITMPolicyV3, including:
        - Robot localization via visual odometry
        - Obstacle map construction and updates
        - Frontier detection for exploration
        - Value map and object map generation
 
-    3. BehaviorITMPolicyV2: Final policy class combining BehaviorMixin and ITMPolicyV2 for
+    3. BehaviorITMPolicyV3: Final policy class combining BehaviorMixin and ITMPolicyV3 for
        object-goal navigation in BEHAVIOR-1K simulator.
 
 Usage Example:
     ```python
-    from vlfm.policy.behavior_policies import BehaviorITMPolicyV2
+    from vlfm.policy.behavior_policies import BehaviorITMPolicyV3
 
     # Initialize policy
-    policy = BehaviorITMPolicyV2(
+    policy = BehaviorITMPolicyV3(
         camera_fx=320.0,  # Camera focal length in pixels
         camera_fy=320.0,
         min_depth=0.1,    # Minimum valid depth in meters
@@ -55,7 +55,7 @@ Usage Example:
 
 Design Philosophy:
     - Modularity: Visual odometry is isolated and easily replaceable
-    - Compatibility: Maintains ITMPolicyV2 interface while adapting to limited sensors
+    - Compatibility: Maintains ITMPolicyV3 interface while adapting to limited sensors
     - Flexibility: Works with normalized depth [0,1] or metric depth in meters
     - Extensibility: Can be extended to support other simulators with similar constraints
 
@@ -80,7 +80,7 @@ from torch import Tensor
 
 from vlfm.mapping.obstacle_map import ObstacleMap
 from vlfm.policy.base_objectnav_policy import VLFMConfig
-from vlfm.policy.itm_policy import ITMPolicyV2
+from vlfm.policy.itm_policy import ITMPolicyV3
 
 
 class SimpleVisualOdometry:
@@ -266,7 +266,7 @@ class SimpleVisualOdometry:
 
 class BehaviorMixin:
     """
-    This Python mixin contains code for running ITMPolicyV2 in BEHAVIOR-1K simulator.
+    This Python mixin contains code for running ITMPolicyV3 in BEHAVIOR-1K simulator.
     It uses simple visual odometry for localization with a single RGB-D camera.
     """
 
@@ -280,7 +280,7 @@ class BehaviorMixin:
     _policy_info: Dict[str, Any] = {}
 
     def __init__(
-        self: Union["BehaviorMixin", ITMPolicyV2],
+        self: Union["BehaviorMixin", ITMPolicyV3],
         camera_fx: float = 320.0,
         camera_fy: float = 320.0,
         min_depth: float = 0.1,
@@ -313,9 +313,11 @@ class BehaviorMixin:
 
     def _initialize(self) -> Tensor:
         """Turn left 30 degrees 12 times to get a 360 view at the beginning"""
-        self._done_initializing = not self._num_steps < 11 # type: ignore
-        return -1.0 * torch.ones(1, 2)  # Turn left
+        self._done_initializing = not self._num_steps < 1 # type: ignore
+        action = [2]
     
+        return torch.tensor([action], dtype=torch.float32)
+        
     @classmethod
     def from_config(cls, config: DictConfig, *args_unused: Any, **kwargs_unused: Any) -> Any:
         """Create policy from config."""
@@ -335,13 +337,13 @@ class BehaviorMixin:
         return cls(**kwargs)
 
     def act(
-        self: Union["BehaviorMixin", ITMPolicyV2],
+        self: Union["BehaviorMixin", ITMPolicyV3],
         observations: Dict[str, Any],
         rnn_hidden_states: Union[Tensor, Any],
         prev_actions: Any,
         masks: Tensor,
         deterministic: bool = False,
-    ) -> Tuple[Tensor, Any]:
+    ) -> Tuple[Any, Any, Dict[str, Any]]:
         """
         Get action from policy.
 
@@ -361,13 +363,35 @@ class BehaviorMixin:
             self._non_coco_caption = observations["objectgoal"] + " . " + self._non_coco_caption
 
         # Call parent class act method
-        parent_cls: ITMPolicyV2 = super()  # type: ignore
+        parent_cls: ITMPolicyV3 = super()  # type: ignore
         action, rnn_hidden_states = parent_cls.act(observations, rnn_hidden_states, prev_actions, masks, deterministic)
-        return action, rnn_hidden_states
+        
+        
+        action = self.action_transfer(action)
+        
+        return action, rnn_hidden_states, self._policy_info
 
-    def _reset(self: Union["BehaviorMixin", ITMPolicyV2]) -> None:
+    def action_transfer(self, action: Tensor):
+        
+        # STOP = torch.tensor([[0]], dtype=torch.long)
+        # MOVE_FORWARD = torch.tensor([[1]], dtype=torch.long)
+        # TURN_LEFT = torch.tensor([[2]], dtype=torch.long)
+        # TURN_RIGHT = torch.tensor([[3]], dtype=torch.long)
+        action = action.cpu()
+        
+        if action == torch.tensor([[0]]):
+            return [0.0, 0.0] 
+        elif action == torch.tensor([[1]]):
+            return [0.5, 0.0]         
+        elif action == torch.tensor([[2]]):
+            return [0.3, 0.5]
+        elif action == torch.tensor([[3]]):
+            return [0.3,-0.5]
+        
+
+    def _reset(self: Union["BehaviorMixin", ITMPolicyV3]) -> None:
         """Reset policy state."""
-        parent_cls: ITMPolicyV2 = super()  # type: ignore
+        parent_cls: ITMPolicyV3 = super()  # type: ignore
         parent_cls._reset()
 
         # Reset visual odometry
@@ -375,7 +399,7 @@ class BehaviorMixin:
 
         print("Visual odometry reset")
 
-    def _cache_observations(self: Union["BehaviorMixin", ITMPolicyV2], observations: Dict[str, Any]) -> None:
+    def _cache_observations(self: Union["BehaviorMixin", ITMPolicyV3], observations: Dict[str, Any]) -> None:
         """
         Cache observations and estimate robot pose using visual odometry.
 
@@ -410,10 +434,9 @@ class BehaviorMixin:
         if use_vo == True:
             robot_xy, robot_heading = self._vo.estimate_motion(rgb, depth_normalized)
         else:
-            robot_xy = np.array(observations["robot_pos"]) # x,y,z
+            robot_xy = np.array(observations["robot_pos"])[:2] # x,y,z
             x, y, z, w = np.array(observations["robot_ori"]) # 4元数
             robot_heading = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y**2 + z**2))
-            
             
 
         print(f"VO pose: position=({robot_xy[0]:.2f}, {robot_xy[1]:.2f}), " f"heading={np.rad2deg(robot_heading):.1f}°")
@@ -423,10 +446,9 @@ class BehaviorMixin:
         cos_h = np.cos(robot_heading)
         sin_h = np.sin(robot_heading)
 
-        tf_camera_to_episodic = np.array(
-            [[cos_h, 0, sin_h, robot_xy[0]], [0, 1, 0, 0], [-sin_h, 0, cos_h, robot_xy[1]], [0, 0, 0, 1]],
-            dtype=np.float64,
-        )
+        tf_camera_to_episodic = observations.get("tf_camera_to_episodic", None)
+        
+        
 
         # Calculate field of view
         h, w = depth.shape
@@ -451,7 +473,7 @@ class BehaviorMixin:
 
         # Get frontiers for exploration
         frontiers = self._obstacle_map.frontiers
-        print(f"Found {len(frontiers)} frontier points")
+        # print(f"Found {len(frontiers)} frontier points")
 
         # Prepare depth tensor for PointNav
         depth_tensor = torch.from_numpy(depth_normalized).reshape(1, h, w, 1)
@@ -482,30 +504,39 @@ class BehaviorMixin:
             ],
         }
 
+    def _get_policy_info(
+        self: Union["BehaviorMixin", ITMPolicyV3],
+        detections: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Get policy info including VO pose."""
+        info = super()._get_policy_info(detections)
+        info["vo_position"] = self._observations_cache.get("robot_xy", None)
+        info["vo_heading"] = self._observations_cache.get("robot_heading", None)
+        return info
 
 @dataclass
 class BehaviorConfig(DictConfig):
-    """Configuration for BehaviorITMPolicyV2"""
+    """Configuration for BehaviorITMPolicyV3"""
 
     policy: VLFMConfig = VLFMConfig()
 
 
-class BehaviorITMPolicyV2(BehaviorMixin, ITMPolicyV2):
+class BehaviorITMPolicyV3(BehaviorMixin, ITMPolicyV3):
     """
-    ITMPolicyV2 adapted for BEHAVIOR-1K simulator with visual odometry.
+    ITMPolicyV3 adapted for BEHAVIOR-1K simulator with visual odometry.
 
     This policy uses a single RGB-D camera and estimates robot pose using
     simple visual odometry. The VO implementation can be easily replaced
     with more sophisticated SLAM systems.
 
     Example usage:
-        policy = BehaviorITMPolicyV2(
+        policy = BehaviorITMPolicyV3(
             camera_fx=320.0,
             camera_fy=320.0,
             min_depth=0.1,
             max_depth=10.0,
             text_prompt="This looks like a target_object | This looks promising",
-            # ... other ITMPolicyV2 parameters
+            # ... other ITMPolicyV3 parameters
         )
 
         # In your simulation loop:

@@ -271,6 +271,6 @@ def overlay_frame(frame: np.ndarray, info: Dict[str, Any], additional: Optional[
     if additional is not None:
         lines.extend(additional)
 
-    frame = overlay_text_to_image(frame, lines, font_size=0.25)
+    frame = overlay_text_to_image(frame, lines, font_size=1.0)
 
     return frame

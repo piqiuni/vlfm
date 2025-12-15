@@ -16,8 +16,8 @@ target:
 # Camera configuration
 camera:
   name: "zed"  # Options: "left", "right", "zed"
-  fx: null  # Camera focal length in x (null for auto-calculation based on 90° FOV)
-  fy: null  # Camera focal length in y (null for auto-calculation)
+  fx: 300  # Camera focal length in x (null for auto-calculation based on 90° FOV)
+  fy: 300  # Camera focal length in y (null for auto-calculation)
   min_depth: 0.1   # Minimum valid depth in meters
   max_depth: 10.0  # Maximum valid depth in meters
 
@@ -39,8 +39,8 @@ camera_configs:
     width: 720
     height: 720
   depth_image_shape:
-    width: 720
-    height: 720
+    width: 224
+    height: 224
 
 # VLFM Policy parameters
 policy:
@@ -48,7 +48,7 @@ policy:
   text_prompt: "This place looks like it has a target_object | This place looks promising for exploration"
   
   # Visualization settings
-  visualize: false  # Enable to save visualization outputs (maps, trajectories)
+  visualize: true  # Enable to save visualization outputs (maps, trajectories)
   
   # Robot action space
   action_dim: 23  # Action space dimension for R1Pro robot

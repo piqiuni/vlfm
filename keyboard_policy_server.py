@@ -85,6 +85,7 @@ def unpack_array(obj):
 packb = functools.partial(msgpack.packb, default=pack_array)
 unpackb = functools.partial(msgpack.unpackb, object_hook=unpack_array)
 
+base_action = [0,0,0,-0.2,0,0,0,-0.7,1,0,0,0,0,0,0,-0.7,-1,0,0,0,0,0,0]
 
 class KeyboardPolicy:
     """
@@ -105,7 +106,7 @@ class KeyboardPolicy:
         self.step_count = 0
 
         # Current action state (persists across steps)
-        self.action = np.zeros(self.action_dim, dtype=np.float32)
+        self.action = base_action
 
         # Current joint being controlled
         self.selected_joint = 0
@@ -143,7 +144,7 @@ class KeyboardPolicy:
 
     def reset(self) -> None:
         """Reset policy state."""
-        self.action = np.zeros(self.action_dim, dtype=np.float32)
+        self.action = base_action.copy()
         self.step_count = 0
         self.selected_joint = 0
         print("\n[RESET] Environment reset signal received - all joints zeroed" + " " * 20)
@@ -181,7 +182,7 @@ class KeyboardPolicy:
 
         elif key == "r":
             # Reset all joints
-            self.action = np.zeros(self.action_dim, dtype=np.float32)
+            self.action = base_action.copy()
             print("\n[RESET] All joints reset to zero" + " " * 30)
             self._print_status()
 
@@ -212,8 +213,8 @@ class KeyboardPolicy:
         if self.step_count % 50 == 0:
             # Print status on same line without newline
             self._print_status()
-
-        return self.action.copy()
+        action_np = np.array(self.action, dtype=np.float32)
+        return action_np
 
 
 class KeyboardInputThread(threading.Thread):

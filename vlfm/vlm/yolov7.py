@@ -112,6 +112,7 @@ class YOLOv7:
 
 class YOLOv7Client:
     def __init__(self, host: str = "localhost", port: int = 12184):
+        host = "10.106.11.248"
         self.url = f"http://{host}:{port}/yolov7"
 
     def predict(self, image_numpy: np.ndarray) -> ObjectDetections:

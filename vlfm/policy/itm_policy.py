@@ -1,5 +1,6 @@
 # Copyright (c) 2023 Boston Dynamics AI Institute LLC. All rights reserved.
 
+import logging
 import os
 from typing import Any, Dict, List, Tuple, Union
 
@@ -65,8 +66,9 @@ class BaseITMPolicy(BaseObjectNavPolicy):
 
     def _explore(self, observations: Union[Dict[str, Tensor], "TensorDict"]) -> Tensor:
         frontiers = self._observations_cache["frontier_sensor"]
+        logger = logging.getLogger("itm_policy")
         if np.array_equal(frontiers, np.zeros((1, 2))) or len(frontiers) == 0:
-            print("No frontiers found during exploration, stopping.")
+            logger.info("No frontiers found during exploration, stopping.")
             return self._stop_action
         best_frontier, best_value = self._get_best_frontier(observations, frontiers)
         os.environ["DEBUG_INFO"] = f"Best value: {best_value*100:.2f}%"
@@ -192,6 +194,7 @@ class BaseITMPolicy(BaseObjectNavPolicy):
 
     def _update_value_map(self) -> None:
         all_rgb = [i[0] for i in self._observations_cache["value_map_rgbd"]]
+        
         cosines = [
             [
                 self._itm.cosine(
@@ -270,7 +273,7 @@ class ITMPolicyV2(BaseITMPolicy):
 
 
 class ITMPolicyV3(ITMPolicyV2):
-    def __init__(self, exploration_thresh: float, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, exploration_thresh: float = 0, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._exploration_thresh = exploration_thresh
 
